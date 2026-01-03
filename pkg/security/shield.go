@@ -1,7 +1,9 @@
 package security
 
 import (
+	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,6 +15,10 @@ type FiveSecondShield struct {
 	blackList  map[string]bool
 	mu         sync.RWMutex
 	stats      *ShieldStats
+	ctx        context.Context
+	cancel     context.CancelFunc
+	running    bool
+	runningMu  sync.Mutex
 }
 
 // ShieldConfig 5秒盾配置
@@ -80,12 +86,17 @@ func NewFiveSecondShield(config *ShieldConfig) *FiveSecondShield {
 		}
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	shield := &FiveSecondShield{
 		config:     config,
 		visitorMap: make(map[string]*VisitorInfo),
 		whiteList:  make(map[string]bool),
 		blackList:  make(map[string]bool),
 		stats:      &ShieldStats{},
+		ctx:        ctx,
+		cancel:     cancel,
+		running:    false,
 	}
 
 	// 加载白名单和黑名单
@@ -97,9 +108,35 @@ func NewFiveSecondShield(config *ShieldConfig) *FiveSecondShield {
 	}
 
 	// 启动清理过期数据协程
-	go shield.cleanupExpired()
+	shield.Start()
 
 	return shield
+}
+
+// Start 启动后台清理任务
+func (s *FiveSecondShield) Start() {
+	s.runningMu.Lock()
+	defer s.runningMu.Unlock()
+
+	if s.running {
+		return
+	}
+
+	s.running = true
+	go s.cleanupExpired()
+}
+
+// Stop 停止后台清理任务
+func (s *FiveSecondShield) Stop() {
+	s.runningMu.Lock()
+	defer s.runningMu.Unlock()
+
+	if !s.running {
+		return
+	}
+
+	s.running = false
+	s.cancel()
 }
 
 // CheckRequest 检查请求是否允许
@@ -107,23 +144,18 @@ func (s *FiveSecondShield) CheckRequest(ip, userAgent, referer string) (bool, st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.stats.mu.Lock()
-	s.stats.TotalRequests++
-	s.stats.mu.Unlock()
+	// 使用 atomic 更新总请求数
+	atomic.AddInt64(&s.stats.TotalRequests, 1)
 
 	// 检查白名单
 	if s.whiteList[ip] {
-		s.stats.mu.Lock()
-		s.stats.WhiteListedRequests++
-		s.stats.mu.Unlock()
+		atomic.AddInt64(&s.stats.WhiteListedRequests, 1)
 		return true, ""
 	}
 
 	// 检查黑名单
 	if s.blackList[ip] {
-		s.stats.mu.Lock()
-		s.stats.BlockedRequests++
-		s.stats.mu.Unlock()
+		atomic.AddInt64(&s.stats.BlockedRequests, 1)
 		return false, "IP在黑名单中"
 	}
 
@@ -131,10 +163,8 @@ func (s *FiveSecondShield) CheckRequest(ip, userAgent, referer string) (bool, st
 	visitor, exists := s.visitorMap[ip]
 	if exists {
 		if visitor.Blocked && time.Now().Before(visitor.BlockExpiry) {
-			s.stats.mu.Lock()
-			s.stats.BlockedRequests++
-			s.stats.CurrentBlocked++
-			s.stats.mu.Unlock()
+			atomic.AddInt64(&s.stats.BlockedRequests, 1)
+			atomic.AddInt64(&s.stats.CurrentBlocked, 1)
 			return false, "请求过于频繁，请稍后再试"
 		}
 
@@ -197,9 +227,8 @@ func (s *FiveSecondShield) checkSlidingWindow(visitor *VisitorInfo, windowStart 
 		return false, "请求过于频繁，请5秒后再试"
 	}
 
-	s.stats.mu.Lock()
-	s.stats.AllowedRequests++
-	s.stats.mu.Unlock()
+	// 使用 atomic 更新允许请求数
+	atomic.AddInt64(&s.stats.AllowedRequests, 1)
 
 	return true, ""
 }
@@ -209,11 +238,10 @@ func (s *FiveSecondShield) blockVisitor(visitor *VisitorInfo) {
 	visitor.Blocked = true
 	visitor.BlockExpiry = time.Now().Add(s.config.BlockDuration)
 
-	s.stats.mu.Lock()
-	s.stats.BlockedRequests++
-	s.stats.CurrentBlocked++
-	s.stats.TotalBlockedIPs++
-	s.stats.mu.Unlock()
+	// 使用 atomic 更新统计
+	atomic.AddInt64(&s.stats.BlockedRequests, 1)
+	atomic.AddInt64(&s.stats.CurrentBlocked, 1)
+	atomic.AddInt64(&s.stats.TotalBlockedIPs, 1)
 }
 
 // cleanupExpired 清理过期数据
@@ -221,15 +249,35 @@ func (s *FiveSecondShield) cleanupExpired() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.mu.Lock()
-		for ip, visitor := range s.visitorMap {
-			// 清理过期数据
-			if time.Now().Sub(visitor.LastRequest) > 24*time.Hour {
-				delete(s.visitorMap, ip)
-			}
+	for {
+		select {
+		case <-s.ctx.Done():
+			// 执行最后一次清理
+			s.doCleanup()
+			return
+		case <-ticker.C:
+			s.doCleanup()
 		}
-		s.mu.Unlock()
+	}
+}
+
+// doCleanup 执行实际的清理操作
+func (s *FiveSecondShield) doCleanup() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	for ip, visitor := range s.visitorMap {
+		// 清理超过24小时无活动的访客
+		if now.Sub(visitor.LastRequest) > 24*time.Hour {
+			delete(s.visitorMap, ip)
+		}
+
+		// 清理已过期的封锁
+		if visitor.Blocked && now.After(visitor.BlockExpiry) {
+			visitor.Blocked = false
+			visitor.RequestCount = 0
+		}
 	}
 }
 

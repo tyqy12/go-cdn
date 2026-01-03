@@ -592,7 +592,7 @@ func (p *AdvancedCCProtection) matchPath(path, url string) bool {
 }
 
 // checkAdaptiveProtection 检查自适应保护
-func (p *AdvancedCCProtection) checkAdaptiveProtection(req *CCRequestInfo) bool {
+func (p *AdvancedCCProtection) checkAdaptiveProtection(_ *CCRequestInfo) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -866,12 +866,12 @@ func (d *CCAttackDetector) Detect(req *CCRequestInfo) *CCAttackInfo {
 	return nil
 }
 
-func (d *CCAttackDetector) matchSignature(sig CCAttackSignature, req *CCRequestInfo) bool {
+func (d *CCAttackDetector) matchSignature(_ CCAttackSignature, _ *CCRequestInfo) bool {
 	// 简化实现
 	return false
 }
 
-func (d *CCAttackDetector) detectRateAnomaly(req *CCRequestInfo) bool {
+func (d *CCAttackDetector) detectRateAnomaly(_ *CCRequestInfo) bool {
 	// 简化实现
 	return false
 }

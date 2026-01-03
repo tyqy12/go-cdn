@@ -982,16 +982,75 @@ func (c *AdvancedCache) runBackgroundTasks() {
 
 // cleanup 清理过期缓存
 func (c *AdvancedCache) cleanup() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	c.mu.RLock()
+	stores := make([]*CacheStore, 0, len(c.stores))
 	for _, store := range c.stores {
+		stores = append(stores, store)
+	}
+	c.mu.RUnlock()
+
+	now := time.Now()
+	totalExpired := int64(0)
+	totalEvicted := int64(0)
+
+	for _, store := range stores {
 		store.mu.Lock()
-		if store.Items > 0 {
-			c.stats.ExpiredItems++
-			c.stats.Evictions++
+
+		if store.Type == "memory" && store.ItemsMap != nil {
+			itemsToDelete := make([]string, 0)
+
+			// 查找过期项目
+			for key, item := range store.ItemsMap {
+				if now.After(item.ExpiresAt) {
+					itemsToDelete = append(itemsToDelete, key)
+					totalExpired++
+				}
+			}
+
+			// 删除过期项目
+			for _, key := range itemsToDelete {
+				if item, exists := store.ItemsMap[key]; exists {
+					store.Size -= int64(item.Size)
+					delete(store.ItemsMap, key)
+					store.Items--
+					totalEvicted++
+				}
+			}
+
+			// 如果启用了 LRU 淘汰，当缓存满时删除最久未使用的项目
+			if c.config.Global != nil && c.config.Global.MaxSize > 0 {
+				for store.Size > c.config.Global.MaxSize && len(store.ItemsList) > 0 {
+					// 使用 ItemsList 作为简单的 LRU 队列
+					lruKey := store.ItemsList[0]
+					store.ItemsList = store.ItemsList[1:]
+
+					if item, exists := store.ItemsMap[lruKey]; exists {
+						store.Size -= int64(item.Size)
+						delete(store.ItemsMap, lruKey)
+						store.Items--
+						totalEvicted++
+					}
+				}
+			}
 		}
+
 		store.mu.Unlock()
+	}
+
+	// 更新统计
+	if totalExpired > 0 || totalEvicted > 0 {
+		c.stats.mu.Lock()
+		c.stats.ExpiredItems += totalExpired
+		c.stats.Evictions += totalEvicted
+		c.stats.TotalSize = 0
+		for _, store := range stores {
+			c.stats.TotalSize += store.Size
+		}
+		c.stats.TotalItems = 0
+		for _, store := range stores {
+			c.stats.TotalItems += store.Items
+		}
+		c.stats.mu.Unlock()
 	}
 }
 
