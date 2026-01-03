@@ -71,18 +71,21 @@ log_info "下载 cdn-${VERSION}.tar.gz..."
 curl -fsSL "https://github.com/$OWNER/$REPO/releases/download/$TAG/cdn-${VERSION}.tar.gz" -o cdn.tar.gz
 tar -xzf cdn.tar.gz
 rm -f cdn.tar.gz
+mv cdn-linux-amd64 cdn
 
 # 下载 Master
 log_info "下载 master-${VERSION}.tar.gz..."
 curl -fsSL "https://github.com/$OWNER/$REPO/releases/download/$TAG/master-${VERSION}.tar.gz" -o master.tar.gz
 tar -xzf master.tar.gz
 rm -f master.tar.gz
+mv master-linux-amd64 master
 
 # 下载 Agent
 log_info "下载 agent-${VERSION}.tar.gz..."
 curl -fsSL "https://github.com/$OWNER/$REPO/releases/download/$TAG/agent-${VERSION}.tar.gz" -o agent.tar.gz
 tar -xzf agent.tar.gz
 rm -f agent.tar.gz
+mv agent-linux-amd64 agent
 
 # 3. 创建目录结构
 log_step "3. 创建目录结构..."
