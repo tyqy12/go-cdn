@@ -74,16 +74,16 @@ jobs:
 
       - name: Build binaries for release
         run: |
-          mkdir -p bin release
-          CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/cdn-linux-amd64 ./cmd/cdn
-          CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/master-linux-amd64 ./cmd/master
-          CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/agent-linux-amd64 ./cmd/agent
-          cp bin/cdn-linux-amd64 release/cdn
-          cp bin/master-linux-amd64 release/master
-          cp bin/agent-linux-amd64 release/agent
-          cd release && tar -czf cdn-linux-amd64-${{ github.run_id }}.tar.gz cdn
-          cd release && tar -czf master-linux-amd64-${{ github.run_id }}.tar.gz master
-          cd release && tar -czf agent-linux-amd64-${{ github.run_id }}.tar.gz agent
+          mkdir -p release
+          VERSION=${GITHUB_REF#refs/tags/v}
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o release/cdn-linux-amd64 ./cmd/cdn
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o release/master-linux-amd64 ./cmd/master
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o release/agent-linux-amd64 ./cmd/agent
+          cd release
+          tar -czf cdn-${VERSION}.tar.gz cdn-linux-amd64
+          tar -czf master-${VERSION}.tar.gz master-linux-amd64
+          tar -czf agent-${VERSION}.tar.gz agent-linux-amd64
+          rm -f cdn-linux-amd64 master-linux-amd64 agent-linux-amd64
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
