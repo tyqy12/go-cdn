@@ -90,6 +90,15 @@ jobs:
           tar -czf agent-${VERSION}.tar.gz agent-linux-amd64
           rm -f cdn-linux-amd64 master-linux-amd64 agent-linux-amd64
 
+      - name: Build web admin
+        working-directory: ./web-admin
+        run: |
+          npm install
+          npm run build
+          cd dist
+          tar -czf ../../release/web-admin-${VERSION}.tar.gz .
+          cd ../..
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
