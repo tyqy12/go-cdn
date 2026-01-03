@@ -1,0 +1,74 @@
+# Compiled Object files, Static and Dynamic libs (Shared Objects)
+*.o
+*.a
+*.so
+
+# Folders
+_obj
+_test
+release
+debian
+bin
+.vscode
+
+# Architecture specific extensions/prefixes
+*.[568vq]
+[568vq].out
+
+*.cgo1.go
+*.cgo2.c
+_cgo_defun.c
+_cgo_gotypes.go
+_cgo_export.*
+
+_testmain.go
+
+*.swp
+*.swo
+
+*.exe
+*.test
+*.exe~
+
+# Build artifacts
+dist/
+build/
+*.tar.gz
+*.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+*.bak
+
+cmd/gost/gost
+snap
+
+# Go
+*.pem
+vendor/
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+logs/
+
+# Coverage
+coverage.out
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config files (not tracked by default)
+!gost.yml.example
+*.yaml
+!config/**/*.example
+*.yml
+!config/**/*.example

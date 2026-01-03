@@ -1,0 +1,15 @@
+# 排除构建产物
+dist/** binary
+build/** binary
+*.exe binary
+*.tar.gz binary
+*.zip binary
+
+# 配置文件不进行文本差异比较
+*.yml linguist-generated
+*.yaml linguist-generated
+*.json linguist-generated
+
+# 忽略某些文件的语言统计
+plans/** linguist-documentation
+docs/** linguist-documentation

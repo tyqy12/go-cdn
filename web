@@ -1,0 +1,151 @@
+<template>
+  <div class="log-analyzer">
+    <el-card>
+      <template #header>
+        <div class="card-header">
+          <span>日志分析配置</span>
+          <el-button type="primary" @click="showCreateTaskDialog = true">创建分析任务</el-button>
+        </div>
+      </template>
+
+      <el-tabs v-model="activeTab">
+        <el-tab-pane label="分析任务" name="tasks">
+          <el-table :data="tasks" style="width: 100%">
+            <el-table-column prop="name" label="任务名称" width="150" />
+            <el-table-column prop="schedule" label="调度" width="100" />
+            <el-table-column prop="status" label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 'running' ? 'success' : 'info'" size="small">{{ row.status }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="150">
+              <template #default="{ row }">
+                <el-button size="small" @click="toggleTask(row)">{{ row.status === 'running' ? '停止' : '启动' }}</el-button>
+                <el-button type="danger" size="small" @click="deleteTask(row.id)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane label="输入配置" name="inputs">
+          <div class="table-toolbar">
+            <el-button type="primary" @click="showAddInputDialog = true">添加输入</el-button>
+          </div>
+          <el-table :data="inputs" style="width: 100%">
+            <el-table-column prop="name" label="名称" width="150" />
+            <el-table-column prop="type" label="类型" width="120" />
+            <el-table-column prop="path" label="路径" />
+          </el-table>
+        </el-tab-pane>
+      </el-tabs>
+    </el-card>
+
+    <el-dialog v-model="showCreateTaskDialog" title="创建分析任务" width="500px">
+      <el-form :model="taskForm" label-width="100px">
+        <el-form-item label="任务名称">
+          <el-input v-model="taskForm.name" placeholder="输入任务名称" />
+        </el-form-item>
+        <el-form-item label="调度方式">
+          <el-select v-model="taskForm.schedule">
+            <el-option label="实时" value="realtime" />
+            <el-option label="每小时" value="hourly" />
+            <el-option label="每天" value="daily" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showCreateTaskDialog = false">取消</el-button>
+        <el-button type="primary" @click="createTask">创建</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showAddInputDialog" title="添加输入" width="500px">
+      <el-form :model="inputForm" label-width="100px">
+        <el-form-item label="名称">
+          <el-input v-model="inputForm.name" placeholder="输入名称" />
+        </el-form-item>
+        <el-form-item label="类型">
+          <el-select v-model="inputForm.type">
+            <el-option label="文件" value="file" />
+            <el-option label="Kafka" value="kafka" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showAddInputDialog = false">取消</el-button>
+        <el-button type="primary" @click="addInput">确定</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup>
+import { ref, reactive, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { logAnalyzerApi } from '../../api/cdn'
+
+const activeTab = ref('tasks')
+const showCreateTaskDialog = ref(false)
+const showAddInputDialog = ref(false)
+const tasks = ref([])
+const inputs = ref([])
+const taskForm = reactive({ name: '', query: '', schedule: 'realtime' })
+const inputForm = reactive({ name: '', type: 'file', path: '' })
+
+const loadTasks = async () => {
+  try {
+    const { data } = await logAnalyzerApi.getTasks()
+    tasks.value = data
+  } catch (e) { /* 空数据 */ }
+}
+
+const loadInputs = async () => {
+  try {
+    const { data } = await logAnalyzerApi.getInputs()
+    inputs.value = data
+  } catch (e) { /* 空数据 */ }
+}
+
+const createTask = async () => {
+  try {
+    await logAnalyzerApi.createTask(taskForm)
+    ElMessage.success('创建成功')
+    showCreateTaskDialog.value = false
+    loadTasks()
+  } catch (e) { ElMessage.error('创建失败') }
+}
+
+const toggleTask = async (task) => {
+  try {
+    if (task.status === 'running') await logAnalyzerApi.stopTask(task.id)
+    else await logAnalyzerApi.startTask(task.id)
+    loadTasks()
+  } catch (e) { ElMessage.error('操作失败') }
+}
+
+const deleteTask = async (id) => {
+  try {
+    await ElMessageBox.confirm('确定要删除此任务吗？', '提示')
+    await logAnalyzerApi.deleteTask(id)
+    ElMessage.success('删除成功')
+    loadTasks()
+  } catch (e) { /* 用户取消 */ }
+}
+
+const addInput = async () => {
+  try {
+    await logAnalyzerApi.addInput(inputForm)
+    ElMessage.success('添加成功')
+    showAddInputDialog.value = false
+    loadInputs()
+  } catch (e) { ElMessage.error('添加失败') }
+}
+
+onMounted(() => { loadTasks(); loadInputs() })
+</script>
+
+<style scoped>
+.log-analyzer { padding: 20px }
+.card-header { display: flex; justify-content: space-between; align-items: center }
+.table-toolbar { display: flex; align-items: center; margin-bottom: 16px }
+</style>
