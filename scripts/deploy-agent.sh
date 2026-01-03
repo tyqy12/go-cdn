@@ -136,7 +136,7 @@ log_step "10. 创建systemd服务..."
 cat > /etc/systemd/system/ai-cdn-agent.service << EOF
 [Unit]
 Description=AI CDN Tunnel - Agent Service
-Documentation=https://github.com/ai-cdn-tunnel
+Documentation=https://github.com/tyqy12/go-cdn
 After=network.target network-online.target
 Wants=network-online.target
 

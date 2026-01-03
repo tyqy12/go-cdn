@@ -107,8 +107,8 @@ curl http://localhost:8080/api/v1/nodes
 
 ```bash
 # 1. 克隆项目
-git clone https://your-repo/ai-cdn-tunnel.git
-cd ai-cdn-tunnel
+git clone https://github.com/tyqy12/go-cdn.git
+cd go-cdn
 
 # 2. 进入脚本目录
 cd scripts
@@ -147,8 +147,8 @@ docker-compose restart master
 
 ```bash
 # 1. 克隆项目
-git clone https://your-repo/ai-cdn-tunnel.git
-cd ai-cdn-tunnel
+git clone https://github.com/tyqy12/go-cdn.git
+cd go-cdn
 
 # 2. 进入脚本目录
 cd scripts

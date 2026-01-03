@@ -80,8 +80,8 @@ AI CDN Tunnel 是一个专为AI大模型对话系统设计的CDN隧道转发系�
 
 ```bash
 # 克隆项目
-git clone https://your-repo/ai-cdn-tunnel.git
-cd ai-cdn-tunnel
+git clone https://github.com/tyqy12/go-cdn.git
+cd go-cdn
 
 # 部署Master
 chmod +x scripts/deploy-master.sh
@@ -118,8 +118,8 @@ http://<MasterIP>:3000
 
 ```bash
 # 克隆项目
-git clone https://your-repo/ai-cdn-tunnel.git
-cd ai-cdn-tunnel
+git clone https://github.com/tyqy12/go-cdn.git
+cd go-cdn
 
 # 部署完整Master（包含前后端和数据库）
 chmod +x scripts/deploy-master-full.sh
@@ -443,7 +443,7 @@ listener:
 ## 项目结构
 
 ```
-ai-cdn-tunnel/
+go-cdn/
 ├── cmd/
 │   ├── master/main.go      # Master主控节点
 │   └── agent/main.go       # Agent被控节点

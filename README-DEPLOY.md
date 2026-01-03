@@ -28,8 +28,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://your-repo/ai-cdn-tunnel.git
-cd ai-cdn-tunnel
+git clone https://github.com/tyqy12/go-cdn.git
+cd go-cdn
 ```
 
 ### 2. 配置环境
