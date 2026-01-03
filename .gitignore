@@ -72,3 +72,6 @@ Thumbs.db
 !config/**/*.example
 *.yml
 !config/**/*.example
+
+# GitHub
+!.github/
