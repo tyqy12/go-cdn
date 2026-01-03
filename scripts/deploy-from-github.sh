@@ -33,8 +33,7 @@ while [[ $# -gt 0 ]]; do
         --repo) REPO="$2"; shift 2 ;;
         --tag) TAG="$2"; shift 2 ;;
         --install-dir) INSTALL_DIR="$2"; shift 2 ;;
-        --type)
-            NODE_TYPE="$2"; shift 2 ;;
+        --type) NODE_TYPE="$2"; shift 2 ;;
         *) log_error "未知参数: $1"; exit 1 ;;
     esac
 done
@@ -59,34 +58,31 @@ if [[ "$TAG" == "latest" ]]; then
     log_info "最新版本: $TAG"
 fi
 
+# 去掉 tag 中的 v 前缀用于文件名
+VERSION=${TAG#v}
+
 # 2. 下载构建产物
 log_step "2. 下载构建产物..."
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
 # 下载 CDN
-log_info "下载 cdn-${TAG}.tar.gz..."
-curl -fsSL "https://github.com/$OWNER/$REPO/releases/download/$TAG/cdn-${TAG}.tar.gz" -o cdn.tar.gz
+log_info "下载 cdn-${VERSION}.tar.gz..."
+curl -fsSL "https://github.com/$OWNER/$REPO/releases/download/$TAG/cdn-${VERSION}.tar.gz" -o cdn.tar.gz
 tar -xzf cdn.tar.gz
 rm -f cdn.tar.gz
 
 # 下载 Master
-log_info "下载 master-${TAG}.tar.gz..."
-curl -fsSL "https://github.com/$OWNER/$REPO/releases/download/$TAG/master-${TAG}.tar.gz" -o master.tar.gz
+log_info "下载 master-${VERSION}.tar.gz..."
+curl -fsSL "https://github.com/$OWNER/$REPO/releases/download/$TAG/master-${VERSION}.tar.gz" -o master.tar.gz
 tar -xzf master.tar.gz
 rm -f master.tar.gz
 
 # 下载 Agent
-log_info "下载 agent-${TAG}.tar.gz..."
-curl -fsSL "https://github.com/$OWNER/$REPO/releases/download/$TAG/agent-${TAG}.tar.gz" -o agent.tar.gz
+log_info "下载 agent-${VERSION}.tar.gz..."
+curl -fsSL "https://github.com/$OWNER/$REPO/releases/download/$TAG/agent-${VERSION}.tar.gz" -o agent.tar.gz
 tar -xzf agent.tar.gz
 rm -f agent.tar.gz
-
-# 下载 Web 前端
-log_info "下载 web-admin-${TAG}.tar.gz..."
-curl -fsSL "https://github.com/$OWNER/$REPO/releases/download/$TAG/web-admin-${TAG}.tar.gz" -o web.tar.gz
-tar -xzf web.tar.gz
-rm -f web.tar.gz
 
 # 3. 创建目录结构
 log_step "3. 创建目录结构..."
@@ -160,7 +156,7 @@ systemctl daemon-reload
 
 # 5. 启动服务
 log_step "5. 启动服务..."
-read -p "启动哪个服务? (cdn/master/agent/all/n): " -n 1 -r
+read -p "启动哪个服务? (c/m/a/n): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Cc]$ ]] || [[ $REPLY =~ ^[Aa]$ ]]; then
     systemctl enable go-cdn
