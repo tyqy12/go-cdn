@@ -22,7 +22,10 @@ jobs:
 
       - name: Build Go binaries
         run: |
-          make build
+          mkdir -p bin
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/cdn ./cmd/cdn
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/master ./cmd/master
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/agent ./cmd/agent
 
       - name: Build web admin
         working-directory: ./web-admin
@@ -57,7 +60,16 @@ jobs:
 
       - name: Build binaries for release
         run: |
-          make release
+          mkdir -p bin release
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/cdn-linux-amd64 ./cmd/cdn
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/master-linux-amd64 ./cmd/master
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/agent-linux-amd64 ./cmd/agent
+          cp bin/cdn-linux-amd64 release/cdn
+          cp bin/master-linux-amd64 release/master
+          cp bin/agent-linux-amd64 release/agent
+          cd release && tar -czf cdn-linux-amd64-${{ github.run_id }}.tar.gz cdn
+          cd release && tar -czf master-linux-amd64-${{ github.run_id }}.tar.gz master
+          cd release && tar -czf agent-linux-amd64-${{ github.run_id }}.tar.gz agent
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
