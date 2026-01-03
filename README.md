@@ -112,7 +112,40 @@ http://<MasterIP>:3000
 
 ## 部署指南
 
-### Master节点部署
+### Master节点完整部署（推荐）
+
+新脚本支持一键部署 Master + 前端 + MongoDB，无需 Docker：
+
+```bash
+# 克隆项目
+git clone https://your-repo/ai-cdn-tunnel.git
+cd ai-cdn-tunnel
+
+# 部署完整Master（包含前后端和数据库）
+chmod +x scripts/deploy-master-full.sh
+sudo ./scripts/deploy-master-full.sh
+
+# 自定义参数部署
+sudo ./scripts/deploy-master-full.sh \
+    --http-port 8080 \
+    --web-port 80 \
+    --mongo-port 27017 \
+    --mongo-user admin \
+    --mongo-pass your-password
+
+# 跳过 MongoDB 安装（使用外部数据库）
+sudo ./scripts/deploy-master-full.sh --skip-mongo
+
+# 跳过前端构建（已有构建产物）
+sudo ./scripts/deploy-master-full.sh --skip-web
+```
+
+**部署完成后：**
+- Web 管理界面: `http://<服务器IP>:80`
+- API 接口: `http://<服务器IP>:8080`
+- gRPC 接口: `<服务器IP>:50051`
+
+### Master节点部署（仅后端）
 
 ```bash
 # 进入部署目录
