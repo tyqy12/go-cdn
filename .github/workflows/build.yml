@@ -91,8 +91,9 @@ jobs:
           rm -f cdn-linux-amd64 master-linux-amd64 agent-linux-amd64
 
       - name: Build web admin
-        working-directory: ./web-admin
         run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          cd web-admin
           npm install
           npm run build
           cd dist
