@@ -22,6 +22,7 @@ import (
 	"github.com/ai-cdn-tunnel/master/config"
 	"github.com/ai-cdn-tunnel/master/db"
 	"github.com/ai-cdn-tunnel/master/handler"
+	"github.com/ai-cdn-tunnel/master/ha"
 	"github.com/ai-cdn-tunnel/master/monitor"
 	"github.com/ai-cdn-tunnel/master/node"
 	pb "github.com/ai-cdn-tunnel/proto/agent"
@@ -32,6 +33,8 @@ var (
 	httpAddr    string
 	grpcAddr    string
 	metricsAddr string
+	nodeID      string
+	enableHA    bool
 )
 
 func init() {
@@ -39,10 +42,19 @@ func init() {
 	flag.StringVar(&httpAddr, "http", ":8080", "http server address")
 	flag.StringVar(&grpcAddr, "grpc", ":50051", "grpc server address")
 	flag.StringVar(&metricsAddr, "metrics", ":9090", "metrics server address")
+	flag.StringVar(&nodeID, "node-id", generateNodeID(), "node ID for HA election")
+	flag.BoolVar(&enableHA, "ha", true, "enable high availability leader election")
 }
 
 func main() {
 	flag.Parse()
+
+	// 生成节点ID
+	if nodeID == "" {
+		nodeID = generateNodeID()
+	}
+
+	log.Printf("Starting GoCDN Master, node ID: %s", nodeID)
 
 	// 加载配置
 	cfg, err := config.Load(configPath)
@@ -63,11 +75,37 @@ func main() {
 	// 初始化监控器
 	monitorMgr := monitor.NewMonitor(database)
 
+	// 初始化高可用选举
+	var election *ha.LeaderElection
+	if enableHA {
+		electionConfig := ha.DefaultElectionConfig(nodeID)
+		electionConfig.LeaseTTL = 30 * time.Second
+		electionConfig.RetryInterval = 5 * time.Second
+		electionConfig.Timeout = 10 * time.Second
+
+		election = ha.NewLeaderElection(electionConfig, database)
+
+		// 设置当选和撤销回调
+		election.OnElected(func() {
+			log.Printf("[HA] This node (%s) is now the leader", nodeID)
+			// 当选为领导者后可以执行初始化操作
+		})
+
+		election.OnRevoked(func() {
+			log.Printf("[HA] This node (%s) is no longer the leader", nodeID)
+			// 失去领导者身份后可以执行清理操作
+		})
+
+		// 启动选举
+		election.Start()
+		log.Printf("[HA] Leader election started")
+	}
+
 	// 创建gRPC服务器
-	grpcServer := createGRPCServer(nodeMgr, monitorMgr)
+	grpcServer := createGRPCServer(nodeMgr, monitorMgr, database)
 
 	// 创建HTTP服务器
-	httpServer := createHTTPServer(nodeMgr, monitorMgr, cfg)
+	httpServer := createHTTPServer(nodeMgr, monitorMgr, database, cfg)
 
 	// 启动gRPC服务
 	lis, err := net.Listen("tcp", grpcAddr)
@@ -92,12 +130,18 @@ func main() {
 	// 启动监控采集
 	go monitorMgr.StartCollecting()
 
-	// 优雅关闭
+	// 等待关闭信号
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	log.Println("Shutting down servers...")
+
+	// 停止高可用选举
+	if election != nil {
+		log.Println("Stopping leader election...")
+		election.Stop()
+	}
 
 	grpcServer.GracefulStop()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -113,7 +157,13 @@ func handleError(msg string, err error) {
 	os.Exit(1)
 }
 
-func createGRPCServer(nodeMgr *node.Manager, monitorMgr *monitor.Monitor) *grpc.Server {
+// generateNodeID 生成唯一节点ID
+func generateNodeID() string {
+	hostname, _ := os.Hostname()
+	return fmt.Sprintf("master-%s-%d", hostname, os.Getpid())
+}
+
+func createGRPCServer(nodeMgr *node.Manager, monitorMgr *monitor.Monitor, database *db.MongoDB) *grpc.Server {
 	// 配置keepalive
 	kaParams := keepalive.ServerParameters{
 		MaxConnectionIdle:     5 * time.Minute,
@@ -134,6 +184,7 @@ func createGRPCServer(nodeMgr *node.Manager, monitorMgr *monitor.Monitor) *grpc.
 
 	// 注册Agent服务
 	agentServer := handler.NewAgentServer(nodeMgr, monitorMgr)
+	agentServer.SetDatabase(database)
 	pb.RegisterAgentServiceServer(grpcServer, agentServer)
 
 	// 注册健康检查
@@ -148,7 +199,7 @@ func createGRPCServer(nodeMgr *node.Manager, monitorMgr *monitor.Monitor) *grpc.
 	return grpcServer
 }
 
-func createHTTPServer(nodeMgr *node.Manager, monitorMgr *monitor.Monitor, cfg *config.Config) *http.Server {
+func createHTTPServer(nodeMgr *node.Manager, monitorMgr *monitor.Monitor, database *db.MongoDB, cfg *config.Config) *http.Server {
 	r := gin.Default()
 
 	// 中间件
@@ -170,9 +221,8 @@ func createHTTPServer(nodeMgr *node.Manager, monitorMgr *monitor.Monitor, cfg *c
 		nodes.GET("/:id", handler.GetNode(nodeMgr))
 		nodes.PUT("/:id", handler.UpdateNode(nodeMgr))
 		nodes.DELETE("/:id", handler.DeleteNode(nodeMgr))
-		nodes.POST("/:id/tags", handler.UpdateNodeTags(nodeMgr))
-		nodes.POST("/:id/online", handler.OnlineNode(nodeMgr))
-		nodes.POST("/:id/offline", handler.OfflineNode(nodeMgr))
+		nodes.GET("/:id/status", handler.GetNodeStatus(nodeMgr))
+		nodes.POST("/:id/restart", handler.RestartNode(nodeMgr))
 
 		// 节点部署脚本
 		deploy := nodes.Group("/deploy-script")
@@ -183,18 +233,11 @@ func createHTTPServer(nodeMgr *node.Manager, monitorMgr *monitor.Monitor, cfg *c
 		// 快速安装
 		nodes.POST("/quick-install", handler.QuickInstall)
 
-		// 配置管理
-		configs := api.Group("/configs")
-		configs.GET("", handler.ListConfigs(nodeMgr))
-		configs.GET("/:version", handler.GetConfig(nodeMgr))
-		configs.POST("", handler.CreateConfig(nodeMgr))
-		configs.POST("/:version/publish", handler.PublishConfig(nodeMgr))
-		configs.POST("/:version/rollback", handler.RollbackConfig(nodeMgr))
-
 		// 指令管理
 		commands := api.Group("/commands")
-		commands.POST("", handler.ExecuteCommand(nodeMgr))
-		commands.GET("/:task_id", handler.GetCommandStatus(nodeMgr))
+		commands.POST("", handler.ExecuteCommand(nodeMgr, database))
+		commands.GET("/:task_id", handler.GetCommandStatus(nodeMgr, database))
+		commands.GET("", handler.ListCommandHistory(database))
 
 		// 监控数据
 		metrics := api.Group("/metrics")
@@ -203,9 +246,9 @@ func createHTTPServer(nodeMgr *node.Manager, monitorMgr *monitor.Monitor, cfg *c
 
 		// 告警
 		alerts := api.Group("/alerts")
-		alerts.GET("", handler.ListAlerts(monitorMgr))
-		alerts.GET("/:id", handler.GetAlert(monitorMgr))
-		alerts.POST("/:id/silence", handler.SilenceAlert(monitorMgr))
+		alerts.GET("", handler.ListAlerts(database))
+		alerts.GET("/:id", handler.GetAlert(database))
+		alerts.POST("/:id/silence", handler.SilenceAlert(database))
 	}
 
 	// 健康检查

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/oschwald/maxminddb-golang"
 )
 
 // IPLib 专业IP库接口
@@ -145,29 +147,122 @@ func (lib *ProfessionalIPLib) loadJSON(path string) error {
 
 // loadMMDB 加载MMDB格式数据库
 func (lib *ProfessionalIPLib) loadMMDB(path string) error {
-	// MMDB格式：MaxMind DB binary format
-	// 需要使用 maxminddb 库解析
-	// 这里使用默认数据作为占位
-	return lib.loadDefaultData()
+	// 打开MaxMind数据库
+	db, err := maxminddb.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to open MaxMind database: %w", err)
+	}
+	defer db.Close()
+
+	// 获取数据库元数据
+	metadata := db.Metadata
+	lib.info = &LibraryInfo{
+		Name:         "MaxMind GeoIP2",
+		DatabaseSize: int64(metadata.BinaryFormatMajorVersion),
+		TotalRecords: int(metadata.NodeCount),
+		Version:      fmt.Sprintf("%s.%s", metadata.DatabaseType, metadata.Description["en"]),
+	}
+
+	if metadata.BuildEpoch > 0 {
+		lib.info.BuildDate = time.Unix(int64(metadata.BuildEpoch), 0)
+	}
+
+	// 注意：MaxMind DB是高效的二进制格式，不需要全部加载到内存
+	// 我们在Query时直接查询数据库，而不是预加载
+	// 这里只是标记数据库已加载，保存数据库路径
+	lib.database["__maxmind_mmdb_path__"] = &IPInfo{
+		IP:        path,
+		Country:   "MaxMind",
+		RiskLevel: RiskLow,
+	}
+
+	return nil
 }
 
 // loadDefaultData 加载默认数据
 func (lib *ProfessionalIPLib) loadDefaultData() error {
-	lib.database["192.168.0.0/24"] = &IPInfo{
-		IP:          "192.168.0.0",
-		Country:     "中国",
-		CountryCode: "CN",
-		Region:      "北京",
-		City:        "北京",
-		ISP:         "阿里云",
-		ISPType:     "云计算",
-		ASN:         "AS15169",
-		ASOrg:       "Google LLC",
-		Mobile:      false,
-		Proxy:       false,
-		Hosting:     true,
-		RiskLevel:   RiskLow,
+	sampleData := map[string]*IPInfo{
+		"192.168.0.0/24": {
+			IP:          "192.168.0.0",
+			Country:     "中国",
+			CountryCode: "CN",
+			Region:      "北京",
+			City:        "北京",
+			ISP:         "阿里云",
+			ISPType:     "云计算",
+			ASN:         "AS37963",
+			ASOrg:       "Hangzhou Alibaba Advertising Co.,Ltd.",
+			Mobile:      false,
+			Proxy:       false,
+			Hosting:     true,
+			RiskLevel:   RiskLow,
+		},
+		"10.0.0.0/8": {
+			IP:          "10.0.0.0",
+			Country:     "中国",
+			CountryCode: "CN",
+			Region:      "上海",
+			City:        "上海",
+			ISP:         "腾讯云",
+			ISPType:     "云计算",
+			ASN:         "AS45090",
+			ASOrg:       "Shenzhen Tencent Computer Systems Company Limited",
+			Mobile:      false,
+			Proxy:       false,
+			Hosting:     true,
+			RiskLevel:   RiskLow,
+		},
+		"172.16.0.0/12": {
+			IP:          "172.16.0.0",
+			Country:     "美国",
+			CountryCode: "US",
+			Region:      "加利福尼亚",
+			City:        "旧金山",
+			ISP:         "AWS",
+			ISPType:     "云计算",
+			ASN:         "AS16509",
+			ASOrg:       "Amazon.com, Inc.",
+			Mobile:      false,
+			Proxy:       false,
+			Hosting:     true,
+			RiskLevel:   RiskLow,
+		},
+		"114.114.114.0/24": {
+			IP:          "114.114.114.0",
+			Country:     "中国",
+			CountryCode: "CN",
+			Region:      "江苏",
+			City:        "南京",
+			ISP:         "电信",
+			ISPType:     "电信运营商",
+			ASN:         "AS4134",
+			ASOrg:       "Chinanet",
+			Mobile:      false,
+			Proxy:       false,
+			Hosting:     false,
+			RiskLevel:   RiskLow,
+		},
+		"8.8.8.0/24": {
+			IP:          "8.8.8.0",
+			Country:     "美国",
+			CountryCode: "US",
+			Region:      "加利福尼亚",
+			City:        "山景城",
+			ISP:         "Google",
+			ISPType:     "科技公司",
+			ASN:         "AS15169",
+			ASOrg:       "Google LLC",
+			Mobile:      false,
+			Proxy:       false,
+			Hosting:     true,
+			RiskLevel:   RiskLow,
+		},
 	}
+
+	for ipRange, info := range sampleData {
+		lib.database[ipRange] = info
+	}
+
 	return nil
 }
 
@@ -184,6 +279,13 @@ func (lib *ProfessionalIPLib) Query(ip net.IP) (*IPInfo, error) {
 		return info, nil
 	}
 
+	// 查询MaxMind数据库
+	if mmdbPathInfo, ok := lib.database["__maxmind_mmdb_path__"]; ok {
+		if info := lib.queryMaxMindDB(mmdbPathInfo.IP, ip); info != nil {
+			return info, nil
+		}
+	}
+
 	// 查询IP段
 	ipMask := lib.getIPMask(ip)
 	if info, ok := lib.database[ipMask]; ok {
@@ -197,6 +299,91 @@ func (lib *ProfessionalIPLib) Query(ip net.IP) (*IPInfo, error) {
 		CountryCode: "XX",
 		RiskLevel:   RiskMedium,
 	}, nil
+}
+
+// queryMaxMindDB 查询MaxMind数据库
+func (lib *ProfessionalIPLib) queryMaxMindDB(dbPath string, ip net.IP) *IPInfo {
+	// 打开MaxMind数据库
+	db, err := maxminddb.Open(dbPath)
+	if err != nil {
+		return nil
+	}
+	defer db.Close()
+
+	// 查询IP信息
+	var record struct {
+		Country struct {
+			IsoCode string `maxminddb:"iso_code"`
+			Names   struct {
+				ZhCN string `maxminddb:"zh-CN"`
+				En   string `maxminddb:"en"`
+			} `maxminddb:"names"`
+		} `maxminddb:"country"`
+		Subdivisions []struct {
+			IsoCode string `maxminddb:"iso_code"`
+			Names   struct {
+				ZhCN string `maxminddb:"zh-CN"`
+				En   string `maxminddb:"en"`
+			} `maxminddb:"names"`
+		} `maxminddb:"subdivisions"`
+		City struct {
+			Names struct {
+				ZhCN string `maxminddb:"zh-CN"`
+				En   string `maxminddb:"en"`
+			} `maxminddb:"names"`
+		} `maxminddb:"city"`
+		Location struct {
+			Latitude  float64 `maxminddb:"latitude"`
+			Longitude float64 `maxminddb:"longitude"`
+			TimeZone  string  `maxminddb:"time_zone"`
+		} `maxminddb:"location"`
+		Traits struct {
+			IsAnonymousProxy    bool `maxminddb:"is_anonymous_proxy"`
+			IsSatelliteProvider bool `maxminddb:"is_satellite_provider"`
+		} `maxminddb:"traits"`
+	}
+
+	err = db.Lookup(ip, &record)
+	if err != nil {
+		return nil
+	}
+
+	// 构建IPInfo
+	info := &IPInfo{
+		IP:          ip.String(),
+		CountryCode: record.Country.IsoCode,
+		Latitude:    record.Location.Latitude,
+		Longitude:   record.Location.Longitude,
+		Timezone:    record.Location.TimeZone,
+		Proxy:       record.Traits.IsAnonymousProxy,
+		Hosting:     record.Traits.IsSatelliteProvider,
+		RiskLevel:   RiskLow,
+	}
+
+	// 设置国家名称
+	if record.Country.Names.ZhCN != "" {
+		info.Country = record.Country.Names.ZhCN
+	} else if record.Country.Names.En != "" {
+		info.Country = record.Country.Names.En
+	}
+
+	// 设置省份/地区
+	if len(record.Subdivisions) > 0 {
+		if record.Subdivisions[0].Names.ZhCN != "" {
+			info.Region = record.Subdivisions[0].Names.ZhCN
+		} else if record.Subdivisions[0].Names.En != "" {
+			info.Region = record.Subdivisions[0].Names.En
+		}
+	}
+
+	// 设置城市
+	if record.City.Names.ZhCN != "" {
+		info.City = record.City.Names.ZhCN
+	} else if record.City.Names.En != "" {
+		info.City = record.City.Names.En
+	}
+
+	return info
 }
 
 // BatchQuery 批量查询IP信息

@@ -70,7 +70,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Promotion } from '@element-plus/icons-vue'
 import { useNodeStore, useCommandStore } from '../stores'
 
@@ -95,7 +95,12 @@ const executeCommand = async () => {
       target_type: commandForm.value.targetType,
       target_ids: commandForm.value.targetIds
     })
-  } catch {}
+    ElMessage.success('指令已提交执行')
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('指令执行失败')
+    }
+  }
 }
 
 const formatTime = (time) => {

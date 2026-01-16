@@ -1,10 +1,13 @@
 import axios from 'axios'
 
-const api = axios.create({ baseURL: '/api' })
+const api = axios.create({
+  baseURL: '/api/v1',
+  timeout: 30000
+})
 
 // ==================== 节点管理 ====================
 export const nodeApi = {
-  list: () => api.get('/nodes'),
+  list: (params) => api.get('/nodes', { params }),
   get: (id) => api.get(`/nodes/${id}`),
   create: (data) => api.post('/nodes', data),
   update: (id, data) => api.put(`/nodes/${id}`, data),
@@ -227,17 +230,10 @@ export const packagesApi = {
 
 // ==================== 节点部署 ====================
 export const deployApi = {
-  // 生成部署脚本
   generateScript: (data) => api.post('/nodes/deploy-script', data),
-
-  // 获取脚本内容
   getScript: (scriptId) => api.get(`/nodes/deploy-script/${scriptId}`),
-
-  // 下载脚本
   downloadScript: (scriptId) => api.get(`/nodes/deploy-script/${scriptId}/download`, {
     responseType: 'blob'
   }),
-
-  // 快速安装命令
   quickInstall: (data) => api.post('/nodes/quick-install', data)
 }

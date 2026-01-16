@@ -3,7 +3,6 @@ package security
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -144,18 +143,18 @@ func (s *FiveSecondShield) CheckRequest(ip, userAgent, referer string) (bool, st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 使用 atomic 更新总请求数
-	atomic.AddInt64(&s.stats.TotalRequests, 1)
+	// 更新总请求数
+	s.stats.TotalRequests++
 
 	// 检查白名单
 	if s.whiteList[ip] {
-		atomic.AddInt64(&s.stats.WhiteListedRequests, 1)
+		s.stats.WhiteListedRequests++
 		return true, ""
 	}
 
 	// 检查黑名单
 	if s.blackList[ip] {
-		atomic.AddInt64(&s.stats.BlockedRequests, 1)
+		s.stats.BlockedRequests++
 		return false, "IP在黑名单中"
 	}
 
@@ -163,8 +162,8 @@ func (s *FiveSecondShield) CheckRequest(ip, userAgent, referer string) (bool, st
 	visitor, exists := s.visitorMap[ip]
 	if exists {
 		if visitor.Blocked && time.Now().Before(visitor.BlockExpiry) {
-			atomic.AddInt64(&s.stats.BlockedRequests, 1)
-			atomic.AddInt64(&s.stats.CurrentBlocked, 1)
+			s.stats.BlockedRequests++
+			s.stats.CurrentBlocked++
 			return false, "请求过于频繁，请稍后再试"
 		}
 
@@ -227,8 +226,8 @@ func (s *FiveSecondShield) checkSlidingWindow(visitor *VisitorInfo, windowStart 
 		return false, "请求过于频繁，请5秒后再试"
 	}
 
-	// 使用 atomic 更新允许请求数
-	atomic.AddInt64(&s.stats.AllowedRequests, 1)
+	// 更新允许请求数
+	s.stats.AllowedRequests++
 
 	return true, ""
 }
@@ -238,10 +237,10 @@ func (s *FiveSecondShield) blockVisitor(visitor *VisitorInfo) {
 	visitor.Blocked = true
 	visitor.BlockExpiry = time.Now().Add(s.config.BlockDuration)
 
-	// 使用 atomic 更新统计
-	atomic.AddInt64(&s.stats.BlockedRequests, 1)
-	atomic.AddInt64(&s.stats.CurrentBlocked, 1)
-	atomic.AddInt64(&s.stats.TotalBlockedIPs, 1)
+	// 更新统计
+	s.stats.BlockedRequests++
+	s.stats.CurrentBlocked++
+	s.stats.TotalBlockedIPs++
 }
 
 // cleanupExpired 清理过期数据

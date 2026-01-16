@@ -249,13 +249,14 @@
 </template>
 
 <script setup>
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, RefreshRight, View, Plus, Download, Document, CopyDocument } from '@element-plus/icons-vue'
-import { useNodeStore } from '../stores'
-import { deployApi } from '../api/cdn'
+import { useNodeStore, useDeployStore } from '../stores'
+import { deployApi } from '../api'
 
 const nodeStore = useNodeStore()
+const deployStore = useDeployStore()
 
 // 对话框状态
 const detailVisible = ref(false)
@@ -388,17 +389,16 @@ const generateScript = async () => {
       }
     }
 
-    const response = await deployApi.generateScript(data)
-    if (response.data.success) {
-      // 获取脚本内容
-      const scriptResponse = await deployApi.getScript(response.data.scriptId)
-      generatedScript.value = scriptResponse.data
-      currentScriptId.value = response.data.scriptId
-      deployDialogVisible.value = false
-      scriptDialogVisible.value = true
-    }
+    await deployStore.generateScript(data)
+    generatedScript.value = deployStore.currentScript
+    currentScriptId.value = deployStore.currentScriptId
+
+    deployDialogVisible.value = false
+    scriptDialogVisible.value = true
+    ElMessage.success('部署脚本生成成功')
   } catch (error) {
     console.error('生成部署脚本失败:', error)
+    ElMessage.error('生成部署脚本失败')
   } finally {
     generating.value = false
   }
@@ -458,8 +458,12 @@ const copyQuickInstallCommand = async () => {
     ElMessage.error('复制失败，请手动选择文本复制')
   }
 }
-</script>
 
+// 页面加载时获取节点列表
+onMounted(() => {
+  nodeStore.fetchNodes()
+})
+</script>
 <style scoped>
 .script-preview :deep(.el-textarea__inner) {
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;

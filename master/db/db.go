@@ -41,6 +41,19 @@ type Store interface {
 	ListNodes(ctx context.Context) ([]*Node, error)
 	DeleteNode(ctx context.Context, nodeID string) error
 	UpdateNodeStatus(ctx context.Context, nodeID string, status string) error
+
+	// 任务管理
+	SaveTask(ctx context.Context, task *Task) error
+	GetTask(ctx context.Context, taskID string) (*Task, error)
+	ListTasks(ctx context.Context, filter *TaskFilter) ([]*Task, error)
+	UpdateTaskStatus(ctx context.Context, taskID string, status string, output string) error
+
+	// 告警管理
+	SaveAlert(ctx context.Context, alert *Alert) error
+	GetAlert(ctx context.Context, alertID string) (*Alert, error)
+	ListAlerts(ctx context.Context, filter *AlertFilter) ([]*Alert, error)
+	UpdateAlertStatus(ctx context.Context, alertID string, status string) error
+	SilenceAlert(ctx context.Context, alertID string, silenced bool, silencedBy string) error
 }
 
 // MongoDB MongoDB实现
@@ -53,6 +66,9 @@ type MongoDB struct {
 	configRollbacks *mongo.Collection
 	configHistory   *mongo.Collection
 	nodes           *mongo.Collection
+	metrics         *mongo.Collection
+	tasks           *mongo.Collection
+	alerts          *mongo.Collection
 }
 
 // LeaderRecord 领导者记录
@@ -133,6 +149,67 @@ type Node struct {
 	LastSeen  time.Time         `bson:"last_seen"`
 }
 
+// Task 任务
+type Task struct {
+	TaskID      string            `bson:"_id"`
+	Command     string            `bson:"command"`
+	NodeID      string            `bson:"node_id"`
+	Status      string            `bson:"status"` // pending, running, completed, failed
+	Params      map[string]string `bson:"params"`
+	Output      string            `bson:"output"`
+	Error       string            `bson:"error"`
+	RequestedBy string            `bson:"requested_by"`
+	StartedAt   time.Time         `bson:"started_at"`
+	CompletedAt time.Time         `bson:"completed_at"`
+	CreatedAt   time.Time         `bson:"created_at"`
+	UpdatedAt   time.Time         `bson:"updated_at"`
+}
+
+// TaskFilter 任务筛选条件
+type TaskFilter struct {
+	NodeID      string
+	Status      string
+	Command     string
+	StartTime   time.Time
+	EndTime     time.Time
+	RequestedBy string
+	Limit       int
+	Offset      int
+}
+
+// Alert 告警
+type Alert struct {
+	AlertID      string            `bson:"_id"`
+	Type         string            `bson:"type"`         // cpu_high, memory_high, node_offline, etc.
+	Severity     string            `bson:"severity"`     // critical, warning, info
+	NodeID       string            `bson:"node_id"`
+	Message      string            `bson:"message"`
+	Details      map[string]string `bson:"details"`
+	Status       string            `bson:"status"`       // active, resolved, acknowledged
+	Silenced     bool              `bson:"silenced"`
+	SilencedBy   string            `bson:"silenced_by"`
+	SilencedAt   time.Time         `bson:"silenced_at"`
+	SilencedUntil time.Time        `bson:"silenced_until"`
+	RepeatCount  int               `bson:"repeat_count"`
+	FirstSeen    time.Time         `bson:"first_seen"`
+	LastSeen     time.Time         `bson:"last_seen"`
+	ResolvedAt   time.Time         `bson:"resolved_at"`
+	CreatedAt    time.Time         `bson:"created_at"`
+}
+
+// AlertFilter 告警筛选条件
+type AlertFilter struct {
+	NodeID      string
+	Severity    string
+	Status      string // active, resolved, acknowledged
+	AlertType   string
+	StartTime   time.Time
+	EndTime     time.Time
+	Silenced    *bool
+	Limit       int
+	Offset      int
+}
+
 // NewMongoDB 创建MongoDB实例
 func NewMongoDB(uri string) (*MongoDB, error) {
 	if strings.TrimSpace(uri) == "" {
@@ -167,6 +244,9 @@ func NewMongoDB(uri string) (*MongoDB, error) {
 		configRollbacks: database.Collection("config_rollbacks"),
 		configHistory:   database.Collection("config_history"),
 		nodes:           database.Collection("nodes"),
+		metrics:         database.Collection("metrics"),
+		tasks:           database.Collection("tasks"),
+		alerts:          database.Collection("alerts"),
 	}
 
 	if err := store.ensureIndexes(ctx); err != nil {
@@ -183,6 +263,14 @@ func (m *MongoDB) Close() error {
 		return nil
 	}
 	return m.client.Disconnect(context.Background())
+}
+
+// GetClient 获取MongoDB客户端
+func (m *MongoDB) GetClient() *mongo.Client {
+	if m == nil {
+		return nil
+	}
+	return m.client
 }
 
 // TryAcquireLeadership 尝试获取领导者身份
@@ -755,6 +843,44 @@ func (m *MongoDB) ensureIndexes(ctx context.Context) error {
 		return err
 	}
 
+	// 任务索引
+	taskIndexes := []mongo.IndexModel{
+		{
+			Keys: bson.D{{Key: "status", Value: 1}},
+		},
+		{
+			Keys: bson.D{{Key: "node_id", Value: 1}},
+		},
+		{
+			Keys: bson.D{{Key: "created_at", Value: -1}},
+		},
+	}
+	if _, err := m.tasks.Indexes().CreateMany(ctx, taskIndexes); err != nil {
+		return err
+	}
+
+	// 告警索引
+	alertIndexes := []mongo.IndexModel{
+		{
+			Keys: bson.D{{Key: "status", Value: 1}},
+		},
+		{
+			Keys: bson.D{{Key: "severity", Value: 1}},
+		},
+		{
+			Keys: bson.D{{Key: "node_id", Value: 1}},
+		},
+		{
+			Keys: bson.D{{Key: "silenced", Value: 1}},
+		},
+		{
+			Keys: bson.D{{Key: "first_seen", Value: -1}},
+		},
+	}
+	if _, err := m.alerts.Indexes().CreateMany(ctx, alertIndexes); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -764,4 +890,316 @@ func parseDatabaseName(uri string) string {
 		return ""
 	}
 	return strings.Trim(parsed.Path, "/")
+}
+
+// ========== 任务管理方法 ==========
+
+// SaveTask 保存任务
+func (m *MongoDB) SaveTask(ctx context.Context, task *Task) error {
+	if m == nil || m.tasks == nil {
+		return errors.New("mongo连接未初始化")
+	}
+	if task == nil {
+		return errors.New("任务不能为空")
+	}
+	if strings.TrimSpace(task.TaskID) == "" {
+		return errors.New("任务ID不能为空")
+	}
+
+	now := time.Now()
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = now
+	}
+	task.UpdatedAt = now
+
+	_, err := m.tasks.ReplaceOne(ctx, bson.M{"_id": task.TaskID}, task, options.Replace().SetUpsert(true))
+	return err
+}
+
+// GetTask 获取任务
+func (m *MongoDB) GetTask(ctx context.Context, taskID string) (*Task, error) {
+	if m == nil || m.tasks == nil {
+		return nil, errors.New("mongo连接未初始化")
+	}
+	if strings.TrimSpace(taskID) == "" {
+		return nil, errors.New("任务ID不能为空")
+	}
+
+	var task Task
+	err := m.tasks.FindOne(ctx, bson.M{"_id": taskID}).Decode(&task)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
+// ListTasks 列出任务
+func (m *MongoDB) ListTasks(ctx context.Context, filter *TaskFilter) ([]*Task, error) {
+	if m == nil || m.tasks == nil {
+		return nil, errors.New("mongo连接未初始化")
+	}
+
+	bsonFilter := bson.M{}
+	if filter != nil {
+		if strings.TrimSpace(filter.NodeID) != "" {
+			bsonFilter["node_id"] = filter.NodeID
+		}
+		if strings.TrimSpace(filter.Status) != "" {
+			bsonFilter["status"] = filter.Status
+		}
+		if strings.TrimSpace(filter.Command) != "" {
+			bsonFilter["command"] = filter.Command
+		}
+		if strings.TrimSpace(filter.RequestedBy) != "" {
+			bsonFilter["requested_by"] = filter.RequestedBy
+		}
+		if !filter.StartTime.IsZero() {
+			bsonFilter["created_at"] = bson.M{"$gte": filter.StartTime}
+		}
+		if !filter.EndTime.IsZero() {
+			if createdAt, ok := bsonFilter["created_at"].(bson.M); ok {
+				createdAt["$lte"] = filter.EndTime
+			} else {
+				bsonFilter["created_at"] = bson.M{"$lte": filter.EndTime}
+			}
+		}
+	}
+
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
+	if filter != nil && filter.Limit > 0 {
+		opts.SetLimit(int64(filter.Limit))
+		opts.SetSkip(int64(filter.Offset))
+	}
+
+	cursor, err := m.tasks.Find(ctx, bsonFilter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var tasks []*Task
+	for cursor.Next(ctx) {
+		var task Task
+		if err := cursor.Decode(&task); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, &task)
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
+// UpdateTaskStatus 更新任务状态
+func (m *MongoDB) UpdateTaskStatus(ctx context.Context, taskID string, status string, output string) error {
+	if m == nil || m.tasks == nil {
+		return errors.New("mongo连接未初始化")
+	}
+	if strings.TrimSpace(taskID) == "" {
+		return errors.New("任务ID不能为空")
+	}
+	if strings.TrimSpace(status) == "" {
+		return errors.New("任务状态不能为空")
+	}
+
+	update := bson.M{
+		"$set": bson.M{
+			"status":     status,
+			"output":     output,
+			"updated_at": time.Now(),
+		},
+	}
+
+	// 如果任务完成，设置完成时间
+	if status == "completed" || status == "failed" {
+		update["$set"].(bson.M)["completed_at"] = time.Now()
+	}
+
+	result, err := m.tasks.UpdateOne(ctx, bson.M{"_id": taskID}, update)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return fmt.Errorf("任务不存在: %s", taskID)
+	}
+	return nil
+}
+
+// ========== 告警管理方法 ==========
+
+// SaveAlert 保存告警
+func (m *MongoDB) SaveAlert(ctx context.Context, alert *Alert) error {
+	if m == nil || m.alerts == nil {
+		return errors.New("mongo连接未初始化")
+	}
+	if alert == nil {
+		return errors.New("告警不能为空")
+	}
+	if strings.TrimSpace(alert.AlertID) == "" {
+		return errors.New("告警ID不能为空")
+	}
+
+	now := time.Now()
+	if alert.CreatedAt.IsZero() {
+		alert.CreatedAt = now
+	}
+	if alert.FirstSeen.IsZero() {
+		alert.FirstSeen = now
+	}
+	alert.LastSeen = now
+
+	_, err := m.alerts.ReplaceOne(ctx, bson.M{"_id": alert.AlertID}, alert, options.Replace().SetUpsert(true))
+	return err
+}
+
+// GetAlert 获取告警
+func (m *MongoDB) GetAlert(ctx context.Context, alertID string) (*Alert, error) {
+	if m == nil || m.alerts == nil {
+		return nil, errors.New("mongo连接未初始化")
+	}
+	if strings.TrimSpace(alertID) == "" {
+		return nil, errors.New("告警ID不能为空")
+	}
+
+	var alert Alert
+	err := m.alerts.FindOne(ctx, bson.M{"_id": alertID}).Decode(&alert)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &alert, nil
+}
+
+// ListAlerts 列出告警
+func (m *MongoDB) ListAlerts(ctx context.Context, filter *AlertFilter) ([]*Alert, error) {
+	if m == nil || m.alerts == nil {
+		return nil, errors.New("mongo连接未初始化")
+	}
+
+	bsonFilter := bson.M{}
+	if filter != nil {
+		if strings.TrimSpace(filter.NodeID) != "" {
+			bsonFilter["node_id"] = filter.NodeID
+		}
+		if strings.TrimSpace(filter.Severity) != "" {
+			bsonFilter["severity"] = filter.Severity
+		}
+		if strings.TrimSpace(filter.Status) != "" {
+			bsonFilter["status"] = filter.Status
+		}
+		if strings.TrimSpace(filter.AlertType) != "" {
+			bsonFilter["type"] = filter.AlertType
+		}
+		if filter.Silenced != nil {
+			bsonFilter["silenced"] = *filter.Silenced
+		}
+		if !filter.StartTime.IsZero() {
+			bsonFilter["first_seen"] = bson.M{"$gte": filter.StartTime}
+		}
+		if !filter.EndTime.IsZero() {
+			if firstSeen, ok := bsonFilter["first_seen"].(bson.M); ok {
+				firstSeen["$lte"] = filter.EndTime
+			} else {
+				bsonFilter["first_seen"] = bson.M{"$lte": filter.EndTime}
+			}
+		}
+	}
+
+	opts := options.Find().SetSort(bson.D{{Key: "first_seen", Value: -1}})
+	if filter != nil && filter.Limit > 0 {
+		opts.SetLimit(int64(filter.Limit))
+		opts.SetSkip(int64(filter.Offset))
+	}
+
+	cursor, err := m.alerts.Find(ctx, bsonFilter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var alerts []*Alert
+	for cursor.Next(ctx) {
+		var alert Alert
+		if err := cursor.Decode(&alert); err != nil {
+			return nil, err
+		}
+		alerts = append(alerts, &alert)
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+	return alerts, nil
+}
+
+// UpdateAlertStatus 更新告警状态
+func (m *MongoDB) UpdateAlertStatus(ctx context.Context, alertID string, status string) error {
+	if m == nil || m.alerts == nil {
+		return errors.New("mongo连接未初始化")
+	}
+	if strings.TrimSpace(alertID) == "" {
+		return errors.New("告警ID不能为空")
+	}
+	if strings.TrimSpace(status) == "" {
+		return errors.New("告警状态不能为空")
+	}
+
+	update := bson.M{
+		"$set": bson.M{
+			"status":     status,
+			"updated_at": time.Now(),
+		},
+	}
+
+	if status == "resolved" {
+		update["$set"].(bson.M)["resolved_at"] = time.Now()
+	}
+
+	result, err := m.alerts.UpdateOne(ctx, bson.M{"_id": alertID}, update)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return fmt.Errorf("告警不存在: %s", alertID)
+	}
+	return nil
+}
+
+// SilenceAlert 静音告警
+func (m *MongoDB) SilenceAlert(ctx context.Context, alertID string, silenced bool, silencedBy string) error {
+	if m == nil || m.alerts == nil {
+		return errors.New("mongo连接未初始化")
+	}
+	if strings.TrimSpace(alertID) == "" {
+		return errors.New("告警ID不能为空")
+	}
+
+	now := time.Now()
+	update := bson.M{
+		"$set": bson.M{
+			"silenced":    silenced,
+			"silenced_by": silencedBy,
+			"silenced_at": now,
+			"updated_at":  now,
+		},
+	}
+
+	// 如果是静音，设置静音过期时间（默认24小时）
+	if silenced {
+		update["$set"].(bson.M)["silenced_until"] = now.Add(24 * time.Hour)
+	}
+
+	result, err := m.alerts.UpdateOne(ctx, bson.M{"_id": alertID}, update)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return fmt.Errorf("告警不存在: %s", alertID)
+	}
+	return nil
 }

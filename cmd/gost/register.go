@@ -1,3 +1,6 @@
+//go:build gost_full
+// +build gost_full
+
 package main
 
 import (

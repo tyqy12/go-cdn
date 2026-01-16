@@ -1,6 +1,8 @@
 package health
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -8,14 +10,17 @@ import (
 
 // AutoScaler 自动扩缩容管理器
 type AutoScaler struct {
-	config      *AutoScaleConfig
+	config        *AutoScaleConfig
 	healthChecker *HealthChecker
-	metrics     *MetricsCollector
-	eventChan   chan *ScaleEvent
-	scaleRules  []*ScaleRule
-	mu          sync.RWMutex
-	stopCh      chan struct{}
-	wg          sync.WaitGroup
+	metrics       *MetricsCollector
+	eventChan     chan *ScaleEvent
+	scaleRules    []*ScaleRule
+	cloudProvider CloudProvider
+	mu            sync.RWMutex
+	stopCh        chan struct{}
+	wg            sync.WaitGroup
+	nodes         map[string]*Node
+	lastScaleTime time.Time
 }
 
 // AutoScaleConfig 自动扩缩容配置
@@ -65,27 +70,27 @@ type NodeConfig struct {
 
 // ScaleRule 扩缩容规则
 type ScaleRule struct {
-	RuleID      string
-	Name        string
-	MetricType  MetricType
-	Condition   string
-	Threshold   float64
-	Action      ScaleAction
-	Cooldown    time.Duration
-	Enabled     bool
-	Priority    int
+	RuleID     string
+	Name       string
+	MetricType MetricType
+	Condition  string
+	Threshold  float64
+	Action     ScaleAction
+	Cooldown   time.Duration
+	Enabled    bool
+	Priority   int
 }
 
 // MetricType 指标类型
 type MetricType string
 
 const (
-	MetricTypeCPUUsage     MetricType = "cpu_usage"
-	MetricTypeMemoryUsage  MetricType = "memory_usage"
-	MetricTypeQPS          MetricType = "qps"
-	MetricTypeLatency      MetricType = "latency"
-	MetricTypeConnections  MetricType = "connections"
-	MetricTypeBandwidth    MetricType = "bandwidth"
+	MetricTypeCPUUsage    MetricType = "cpu_usage"
+	MetricTypeMemoryUsage MetricType = "memory_usage"
+	MetricTypeQPS         MetricType = "qps"
+	MetricTypeLatency     MetricType = "latency"
+	MetricTypeConnections MetricType = "connections"
+	MetricTypeBandwidth   MetricType = "bandwidth"
 )
 
 // ScaleAction 扩缩容动作
@@ -98,23 +103,23 @@ const (
 
 // ScaleEvent 扩缩容事件
 type ScaleEvent struct {
-	EventType   EventType
-	NodeID      string
-	Region      string
-	OldReplica  int
-	NewReplica  int
-	Reason      string
-	Timestamp   time.Time
-	Success     bool
-	Message     string
+	EventType  EventType
+	NodeID     string
+	Region     string
+	OldReplica int
+	NewReplica int
+	Reason     string
+	Timestamp  time.Time
+	Success    bool
+	Message    string
 }
 
 // MetricsCollector 指标收集器
 type MetricsCollector struct {
-	mu       sync.RWMutex
-	metrics  map[string]*NodeMetrics
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
+	mu      sync.RWMutex
+	metrics map[string]*NodeMetrics
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
 }
 
 // NodeMetrics 节点指标
@@ -133,13 +138,13 @@ type NodeMetrics struct {
 // DefaultAutoScaleConfig 默认配置
 func DefaultAutoScaleConfig() *AutoScaleConfig {
 	return &AutoScaleConfig{
-		Enabled:          true,
-		MinNodes:         2,
-		MaxNodes:         20,
-		ScaleInterval:    30 * time.Second,
-		ScaleUpThreshold: 0.7,  // CPU使用率70%时扩容
+		Enabled:            true,
+		MinNodes:           2,
+		MaxNodes:           20,
+		ScaleInterval:      30 * time.Second,
+		ScaleUpThreshold:   0.7, // CPU使用率70%时扩容
 		ScaleDownThreshold: 0.3, // CPU使用率30%时缩容
-		CooldownPeriod:   5 * time.Minute,
+		CooldownPeriod:     5 * time.Minute,
 		NodeConfig: &NodeConfig{
 			Region:       "default",
 			InstanceType: "standard",
@@ -148,18 +153,23 @@ func DefaultAutoScaleConfig() *AutoScaleConfig {
 }
 
 // NewAutoScaler 创建自动扩缩容管理器
-func NewAutoScaler(cfg *AutoScaleConfig, healthChecker *HealthChecker) *AutoScaler {
+func NewAutoScaler(cfg *AutoScaleConfig, healthChecker *HealthChecker, cloudProvider CloudProvider) *AutoScaler {
 	if cfg == nil {
 		cfg = DefaultAutoScaleConfig()
 	}
 
+	if cloudProvider == nil {
+		cloudProvider = NewMockCloudProvider()
+	}
+
 	return &AutoScaler{
-		config:       cfg,
+		config:        cfg,
 		healthChecker: healthChecker,
-		metrics:      NewMetricsCollector(),
-		eventChan:    make(chan *ScaleEvent, 100),
-		scaleRules:   make([]*ScaleRule, 0),
-		stopCh:       make(chan struct{}),
+		metrics:       NewMetricsCollector(),
+		eventChan:     make(chan *ScaleEvent, 100),
+		scaleRules:    make([]*ScaleRule, 0),
+		cloudProvider: cloudProvider,
+		stopCh:        make(chan struct{}),
 	}
 }
 
@@ -480,17 +490,79 @@ func (a *AutoScaler) executeRuleAction(rule *ScaleRule) {
 
 // createNode 创建新节点
 func (a *AutoScaler) createNode() *Node {
-	// 实现节点创建逻辑
-	return &Node{
-		ID:     generateNodeID(),
-		Region: a.config.NodeConfig.Region,
-		Status: "pending",
+	if a.cloudProvider == nil {
+		log.Printf("[AutoScaler] No cloud provider configured")
+		return nil
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// 构建创建实例请求
+	req := &CreateInstanceRequest{
+		Name:         fmt.Sprintf("gocdn-node-%s", generateNodeID()[:8]),
+		InstanceType: a.config.NodeConfig.InstanceType,
+		Region:       a.config.NodeConfig.Region,
+		CPU:          2,
+		MemoryGB:     4,
+		Disks: []*DiskConfig{
+			{
+				Type:   "system",
+				SizeGB: 40,
+			},
+		},
+		Network: &NetworkConfig{
+			PublicBandwidth: 10,
+			AssignPublicIP:  true,
+		},
+		Tags: map[string]string{
+			"system":  "gocdn",
+			"purpose": "cdn-node",
+		},
+	}
+
+	// 调用云平台 API 创建实例
+	resp, err := a.cloudProvider.CreateInstance(ctx, req)
+	if err != nil {
+		log.Printf("[AutoScaler] Failed to create instance: %v", err)
+		return nil
+	}
+
+	node := &Node{
+		ID:        resp.InstanceID,
+		Addr:      resp.PublicIP,
+		Port:      8080,
+		Region:    a.config.NodeConfig.Region,
+		Status:    resp.Status,
+		CreatedAt: resp.CreatedAt,
+		UpdatedAt: time.Now(),
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.nodes[node.ID] = node
+	a.lastScaleTime = time.Now()
+
+	log.Printf("[AutoScaler] Created node: %s (IP: %s) in region: %s", node.ID, node.Addr, node.Region)
+
+	return node
 }
 
 // removeNode 移除节点
 func (a *AutoScaler) removeNode(node *Node) error {
-	// 实现节点移除逻辑
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if _, exists := a.nodes[node.ID]; !exists {
+		return fmt.Errorf("node not found: %s", node.ID)
+	}
+
+	delete(a.nodes, node.ID)
+	a.lastScaleTime = time.Now()
+
+	log.Printf("[AutoScaler] Removed node: %s", node.ID)
+
 	return nil
 }
 

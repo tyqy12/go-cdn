@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"log"
 	"regexp"
 	"sync"
 	"time"
@@ -210,6 +211,25 @@ type CacheItem struct {
 	Size       int               `json:"size"`
 	Hits       int64             `json:"hits"`
 	LastHitAt  time.Time         `json:"last_hit_at"`
+	// LRU 链表指针
+	prev *CacheItem
+	next *CacheItem
+}
+
+// LRUNode LRU 链表节点包装
+type LRUNode struct {
+	key   string
+	item  *CacheItem
+}
+
+// LRUCache LRU 缓存实现
+type LRUCache struct {
+	capacity   int64
+	size       int64
+	items      map[string]*CacheItem
+	head       *CacheItem  // 头部是最近使用的
+	tail       *CacheItem  // 尾部是最久未使用的
+	mu         sync.Mutex
 }
 
 // CacheStats 缓存统计
@@ -475,7 +495,7 @@ func (c *AdvancedCache) initStores() {
 
 		if err := client.Ping(ctx).Err(); err != nil {
 			// Redis连接失败，使用内存存储
-			fmt.Printf("Redis连接失败，使用内存存储: %v\n", err)
+			log.Printf("WARN: Redis connection failed, falling back to memory storage: %v", err)
 			client.Close()
 			return
 		}
@@ -489,7 +509,7 @@ func (c *AdvancedCache) initStores() {
 			Type: "redis",
 		}
 
-		fmt.Println("Redis存储初始化成功")
+		log.Println("INFO: Redis cache storage initialized successfully")
 	}
 }
 
@@ -1091,4 +1111,119 @@ func (c *AdvancedCache) StopPrefetch() {
 	c.prefetcher.mu.Lock()
 	c.prefetcher.running = false
 	c.prefetcher.mu.Unlock()
+}
+
+// NewLRUCache 创建 LRU 缓存
+func NewLRUCache(capacity int64) *LRUCache {
+	return &LRUCache{
+		capacity: capacity,
+		items:    make(map[string]*CacheItem),
+		head:     &CacheItem{},
+		tail:     &CacheItem{},
+	}
+}
+
+// init 初始化链表
+func (l *LRUCache) init() {
+	l.head.next = l.tail
+	l.tail.prev = l.head
+}
+
+// Get 获取缓存项（将访问的项移到头部）
+func (l *LRUCache) Get(key string) *CacheItem {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if item, ok := l.items[key]; ok {
+		l.moveToHead(item)
+		return item
+	}
+	return nil
+}
+
+// Put 添加缓存项（如果已存在则更新）
+func (l *LRUCache) Put(key string, item *CacheItem) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if existing, ok := l.items[key]; ok {
+		// 更新现有项
+		l.removeNode(existing)
+		l.size -= int64(existing.Size)
+	}
+
+	l.items[key] = item
+	l.addNode(item)
+	l.size += int64(item.Size)
+
+	// 如果超过容量，删除最久未使用的项
+	for l.size > l.capacity && l.tail.prev != l.head {
+		l.removeNode(l.tail.prev)
+		delete(l.items, l.tail.prev.Key)
+		l.size -= int64(l.tail.prev.Size)
+	}
+}
+
+// Remove 删除缓存项
+func (l *LRUCache) Remove(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if item, ok := l.items[key]; ok {
+		l.removeNode(item)
+		delete(l.items, key)
+		l.size -= int64(item.Size)
+		return true
+	}
+	return false
+}
+
+// Size 获取当前大小
+func (l *LRUCache) Size() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.size
+}
+
+// Capacity 获取容量
+func (l *LRUCache) Capacity() int64 {
+	return l.capacity
+}
+
+// Len 获取项数
+func (l *LRUCache) Len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.items)
+}
+
+// addNode 将节点添加到头部（最近使用）
+func (l *LRUCache) addNode(item *CacheItem) {
+	item.prev = l.head
+	item.next = l.head.next
+
+	l.head.next.prev = item
+	l.head.next = item
+}
+
+// removeNode 从链表中移除节点
+func (l *LRUCache) removeNode(item *CacheItem) {
+	item.prev.next = item.next
+	item.next.prev = item.prev
+	item.prev = nil
+	item.next = nil
+}
+
+// moveToHead 将节点移到头部
+func (l *LRUCache) moveToHead(item *CacheItem) {
+	l.removeNode(item)
+	l.addNode(item)
+}
+
+// GetLRUItem 获取最久未使用的项
+func (l *LRUCache) GetLRUItem() *CacheItem {
+	if l.tail.prev != l.head {
+		return l.tail.prev
+	}
+	return nil
 }

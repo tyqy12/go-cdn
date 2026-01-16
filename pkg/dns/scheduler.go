@@ -328,6 +328,12 @@ func NewHealthChecker(config *HealthCheckConfig, ctx context.Context) *HealthChe
 	return checker
 }
 
+// Start 启动DNS调度器
+func (s *DNSScheduler) Start() {
+	// 同步健康检查目标
+	s.SyncHealthChecks()
+}
+
 // AddProvider 添加DNS提供商
 func (s *DNSScheduler) AddProvider(provider DNSProvider) {
 	s.mu.Lock()
@@ -342,6 +348,44 @@ func (s *DNSScheduler) AddRecord(record DNSRecord) {
 	defer s.mu.Unlock()
 
 	s.records[record.Name] = append(s.records[record.Name], record)
+
+	// 添加到健康检查
+	s.healthCheck.AddTarget(record.Value)
+}
+
+// UpdateRecords 更新DNS记录并同步健康检查
+func (s *DNSScheduler) UpdateRecords(records []DNSRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 清空现有记录
+	s.records = make(map[string][]DNSRecord)
+
+	// 添加新记录
+	for _, record := range records {
+		s.records[record.Name] = append(s.records[record.Name], record)
+		// 添加到健康检查
+		s.healthCheck.AddTarget(record.Value)
+	}
+}
+
+// SyncHealthChecks 同步健康检查目标
+func (s *DNSScheduler) SyncHealthChecks() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// 收集所有DNS记录中的地址
+	targets := make(map[string]bool)
+	for _, records := range s.records {
+		for _, record := range records {
+			if record.Enabled && record.Value != "" {
+				targets[record.Value] = true
+			}
+		}
+	}
+
+	// 同步到健康检查器
+	s.healthCheck.SyncTargets(targets)
 }
 
 // Resolve 智能解析域名
@@ -550,10 +594,64 @@ func (c *HealthChecker) runChecks() {
 // performChecks 执行检查
 func (c *HealthChecker) performChecks() {
 	c.mu.RLock()
+	targets := make([]string, 0, len(c.results))
+	for target := range c.results {
+		targets = append(targets, target)
+	}
 	c.mu.RUnlock()
 
-	for target, result := range c.results {
-		c.checkTarget(target, result)
+	for _, target := range targets {
+		c.mu.RLock()
+		result := c.results[target]
+		c.mu.RUnlock()
+
+		if result != nil {
+			c.checkTarget(target, result)
+		}
+	}
+}
+
+// AddTarget 添加检查目标
+func (c *HealthChecker) AddTarget(target string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, exists := c.results[target]; !exists {
+		c.results[target] = &HealthResult{
+			Target:       target,
+			Status:       "unknown",
+			LastCheck:    time.Now(),
+			ResponseTime: 0,
+			SuccessRate:  0,
+			FailureCount: 0,
+		}
+	}
+}
+
+// SyncTargets 同步检查目标
+func (c *HealthChecker) SyncTargets(targets map[string]bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 添加新目标
+	for target := range targets {
+		if _, exists := c.results[target]; !exists {
+			c.results[target] = &HealthResult{
+				Target:       target,
+				Status:       "unknown",
+				LastCheck:    time.Now(),
+				ResponseTime: 0,
+				SuccessRate:  0,
+				FailureCount: 0,
+			}
+		}
+	}
+
+	// 删除不再存在的目标
+	for target := range c.results {
+		if !targets[target] {
+			delete(c.results, target)
+		}
 	}
 }
 

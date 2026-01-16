@@ -1,0 +1,329 @@
+syntax = "proto3";
+
+package agent;
+
+option go_package = "github.com/ai-cdn-tunnel/proto/agent";
+
+// ========== 服务定义 ==========
+
+service AgentService {
+    // 节点注册
+    rpc Register(RegisterRequest) returns (RegisterResponse);
+
+    // 心跳
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+    // 配置推送
+    rpc PushConfig(PushConfigRequest) returns (PushConfigResponse);
+
+    // 配置监听（流式）
+    rpc WatchConfig(ConfigWatchRequest) returns (stream ConfigWatchResponse);
+
+    // 命令执行（双向流）
+    rpc ExecuteCommand(stream CommandRequest) returns (stream CommandResponse);
+
+    // 状态上报
+    rpc ReportStatus(StatusReport) returns (StatusResponse);
+
+    // 获取状态
+    rpc GetStatus(StatusRequest) returns (StatusResponse);
+}
+
+// ========== 注册相关 ==========
+
+message RegisterRequest {
+    string node_id = 1;
+    string node_name = 2;
+    string node_type = 3;  // edge, core
+    string region = 4;
+    string ip = 5;
+    map<string, string> metadata = 6;
+    string version = 7;
+}
+
+message RegisterResponse {
+    bool success = 1;
+    string message = 2;
+    string master_version = 3;
+    string node_token = 4;
+}
+
+// ========== 心跳相关 ==========
+
+message HeartbeatRequest {
+    string node_id = 1;
+    int64 timestamp = 2;
+    string status = 3;  // online, offline, degraded
+    map<string, string> attributes = 4;
+    TLSInfo tls_info = 5;
+}
+
+message HeartbeatResponse {
+    bool success = 1;
+    string message = 2;
+    string status = 3;
+    string master_status = 4;
+}
+
+message TLSInfo {
+    string version = 1;
+    string cipher = 2;
+    string cert_fingerprint = 3;
+}
+
+// ========== 配置相关 ==========
+
+message PushConfigRequest {
+    string node_id = 1;
+    string config_type = 2;  // cdn, gost, tls, security
+    bytes config_data = 3;   // JSON/YAML数据
+    int64 version = 4;
+    string checksum = 5;
+}
+
+message PushConfigResponse {
+    bool success = 1;
+    string message = 2;
+    int64 applied_version = 3;
+}
+
+// 配置监听相关
+message ConfigWatchRequest {
+    string node_id = 1;
+    int64 last_version = 2;  // 最后接收的配置版本
+    string node_type = 3;   // edge, core
+}
+
+message ConfigWatchResponse {
+    int64 version = 1;
+    string config_type = 2;
+    bytes config_data = 3;
+    string checksum = 4;
+    int64 timestamp = 5;
+    bool force_reload = 6;
+    string message = 7;
+}
+
+// CDN配置
+message CDNConfig {
+    // 服务配置
+    ServerConfig server = 1;
+
+    // 上游配置
+    repeated UpstreamConfig upstreams = 2;
+
+    // 负载均衡配置
+    LoadBalanceConfig load_balance = 3;
+
+    // 健康检查配置
+    HealthCheckConfig health_check = 4;
+
+    // 故障转移配置
+    FailoverConfig failover = 5;
+
+    // 安全防护配置
+    SecurityConfig security = 6;
+
+    // 路由配置
+    repeated RouteConfig routes = 7;
+}
+
+message ServerConfig {
+    string http_addr = 1;
+    string https_addr = 2;
+    string mode = 3;  // debug, release
+    string tls_cert_file = 4;
+    string tls_key_file = 5;
+    bool tls_auto_gen = 6;
+    string tls_domain = 7;
+}
+
+message UpstreamConfig {
+    string name = 1;
+    string addr = 2;
+    int32 port = 3;
+    int32 weight = 4;
+    bool enabled = 5;
+    string path_prefix = 6;
+}
+
+message LoadBalanceConfig {
+    string strategy = 1;  // round_robin, least_conn, ip_hash, weighted, random
+    bool sticky = 2;
+    string sticky_mode = 3;  // cookie, ip_hash
+    int32 sticky_timeout = 4;
+}
+
+message HealthCheckConfig {
+    bool enabled = 1;
+    int32 interval = 2;  // 秒
+    int32 timeout = 3;   // 秒
+    int32 unhealthy_threshold = 4;
+    int32 healthy_threshold = 5;
+    string check_path = 6;  // HTTP检查路径
+    string check_method = 7;  // GET, POST
+    repeated int32 expected_codes = 8;  // 期望的状态码
+}
+
+message FailoverConfig {
+    bool enabled = 1;
+    string strategy = 2;  // primary, active_active, active_standby, weighted
+    int32 max_retries = 3;
+    int32 switch_timeout = 4;  // 秒
+    bool auto_fallback = 5;
+    int32 stable_window = 6;  // 秒
+}
+
+message SecurityConfig {
+    // 连接保护
+    int32 global_max_connections = 1;
+    int32 global_max_conn_rate = 2;  // 每秒
+    int32 per_client_max_connections = 3;
+    int32 per_client_max_rate = 4;
+
+    // 慢连接防护
+    int32 slow_connection_threshold = 5;  // 秒
+    int32 slow_read_threshold = 6;  // 秒
+    int32 slow_write_threshold = 7;  // 秒
+
+    // 请求限制
+    int32 max_header_size = 8;  // 字节
+    int32 max_headers_count = 9;
+    int64 max_request_body_size = 10;  // 字节
+
+    // 速率限制
+    repeated RateLimitRule rate_limits = 11;
+
+    // IP黑白名单
+    repeated string ip_whitelist = 12;
+    repeated string ip_blacklist = 13;
+
+    // CC防护
+    CCProtection cc_protection = 14;
+}
+
+message RateLimitRule {
+    string name = 1;
+    string path_pattern = 2;
+    int32 threshold = 3;  // 请求数
+    int32 window = 4;  // 秒
+    string action = 5;  // limit, block
+}
+
+message CCProtection {
+    bool enabled = 1;
+    int32 threshold = 2;  // QPS
+    int32 burst = 3;
+    string action = 4;  // limit, challenge, block
+    string challenge_type = 5;  // js, captcha
+}
+
+message RouteConfig {
+    string name = 1;
+    string pattern = 2;
+    string match_type = 3;  // prefix, regex, exact
+    string target_pool = 4;
+    string action = 5;  // allow, block, redirect
+    string redirect_url = 6;
+    int32 priority = 7;
+    bool enabled = 8;
+}
+
+// ========== 命令相关 ==========
+
+message CommandRequest {
+    string command_id = 1;
+    string node_id = 2;
+    string command = 3;  // reload, restart, stop, status, logs
+    map<string, string> params = 4;
+}
+
+message CommandResponse {
+    string command_id = 1;
+    bool success = 2;
+    string output = 3;
+    string error = 4;
+    int64 timestamp = 5;
+}
+
+// ========== 状态相关 ==========
+
+message StatusReport {
+    string node_id = 1;
+    int64 timestamp = 2;
+
+    // 系统资源
+    SystemMetrics system = 3;
+
+    // 网络指标
+    NetworkMetrics network = 4;
+
+    // CDN指标
+    CDNMetrics cdn = 5;
+
+    // 连接指标
+    ConnectionMetrics connections = 6;
+
+    // 安全指标
+    SecurityMetrics security = 7;
+}
+
+message SystemMetrics {
+    double cpu_usage = 1;
+    double memory_usage = 2;
+    double disk_usage = 3;
+    int32 goroutines = 4;
+    int64 uptime = 5;
+}
+
+message NetworkMetrics {
+    double bandwidth_in = 1;  // Mbps
+    double bandwidth_out = 2;  // Mbps
+    int64 bytes_in = 3;
+    int64 bytes_out = 4;
+}
+
+message CDNMetrics {
+    double qps = 1;
+    int64 total_requests = 2;
+    int64 success_requests = 3;
+    int64 error_requests = 4;
+    double p50_latency = 5;  // 毫秒
+    double p95_latency = 6;
+    double p99_latency = 7;
+}
+
+message ConnectionMetrics {
+    int64 active_connections = 1;
+    int64 total_connections = 2;
+    int64 closed_connections = 3;
+    int64 idle_connections = 4;
+}
+
+message SecurityMetrics {
+    int64 blocked_connections = 1;
+    int64 slow_connections = 2;
+    int64 rate_limited_requests = 3;
+    int64 cc_blocked = 4;
+}
+
+message StatusRequest {
+    string node_id = 1;
+}
+
+message StatusResponse {
+    bool success = 1;
+    string message = 2;
+    StatusData status = 3;
+}
+
+message StatusData {
+    string node_id = 1;
+    string status = 2;  // online, offline, degraded
+    int64 timestamp = 3;
+    SystemMetrics system = 4;
+    NetworkMetrics network = 5;
+    CDNMetrics cdn = 6;
+    ConnectionMetrics connections = 7;
+    SecurityMetrics security = 8;
+}

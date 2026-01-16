@@ -5,6 +5,11 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v3/net"
 )
 
 // ResourceManager 资源管理器
@@ -119,6 +124,51 @@ type ResourceMonitor struct {
 	alertHandlers []AlertHandler
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
+
+	// 缓存相关
+	cpuCache     *metricCache
+	memCache     *metricCache
+	diskCache    *metricCache
+	networkCache *metricCache
+
+	// 采样窗口
+	sampleWindow int
+	sampleCount  int
+}
+
+// metricCache 指标缓存
+type metricCache struct {
+	value     float64
+	timestamp time.Time
+	valid     bool
+}
+
+// newMetricCache 创建指标缓存
+func newMetricCache() *metricCache {
+	return &metricCache{
+		valid:     false,
+		timestamp: time.Time{},
+	}
+}
+
+// isExpired 检查缓存是否过期
+func (c *metricCache) isExpired(duration time.Duration) bool {
+	return !c.valid || time.Since(c.timestamp) > duration
+}
+
+// get 获取缓存值
+func (c *metricCache) get() (float64, bool) {
+	if !c.valid {
+		return 0, false
+	}
+	return c.value, true
+}
+
+// set 设置缓存值
+func (c *metricCache) set(value float64) {
+	c.value = value
+	c.timestamp = time.Now()
+	c.valid = true
 }
 
 // ResourceMetrics 资源指标
@@ -244,6 +294,12 @@ func NewResourceMonitor() *ResourceMonitor {
 		metrics:       make(map[string]*ResourceMetrics),
 		alertHandlers: make([]AlertHandler, 0),
 		stopCh:        make(chan struct{}),
+		cpuCache:      newMetricCache(),
+		memCache:      newMetricCache(),
+		diskCache:     newMetricCache(),
+		networkCache:  newMetricCache(),
+		sampleWindow:  5, // 采样窗口大小
+		sampleCount:   0, // 当前采样次数
 	}
 }
 
@@ -571,40 +627,255 @@ func (m *ResourceMonitor) updateMetrics() {
 		Timestamp: time.Now(),
 	}
 
+	// 收集CPU使用率
+	if cpuUsage, err := m.getCPUUsage(); err == nil {
+		metrics.CPUUsage = cpuUsage
+	}
+
+	// 收集内存使用率
+	if memUsage, err := m.getMemoryUsage(); err == nil {
+		metrics.MemoryUsage = memUsage
+	}
+
+	// 收集磁盘使用率
+	if diskUsage, err := m.getDiskUsage(); err == nil {
+		metrics.DiskUsage = diskUsage
+	}
+
+	// 收集网络指标
+	if netIn, netOut, err := m.getNetworkStats(); err == nil {
+		metrics.BandwidthIn = netIn
+		metrics.BandwidthOut = netOut
+	}
+
 	m.metrics["system"] = metrics
 
 	// 检查告警
 	m.checkAlerts(metrics)
 }
 
+func (m *ResourceMonitor) getCPUUsage() (float64, error) {
+	const cacheDuration = 5 * time.Second
+
+	// 检查缓存
+	if value, ok := m.cpuCache.get(); ok && !m.cpuCache.isExpired(cacheDuration) {
+		return value, nil
+	}
+
+	// 多次采样取平均值
+	sampleCount := 3
+	var total float64
+	var validSamples int
+
+	for i := 0; i < sampleCount; i++ {
+		percent, err := cpu.Percent(time.Second, false)
+		if err != nil {
+			log.Printf("Warning: CPU sample %d failed: %v", i+1, err)
+			continue
+		}
+
+		if len(percent) > 0 {
+			total += percent[0]
+			validSamples++
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if validSamples == 0 {
+		return 0, fmt.Errorf("failed to get CPU samples")
+	}
+
+	avgCPU := total / float64(validSamples) / 100.0
+
+	// 缓存结果
+	m.cpuCache.set(avgCPU)
+
+	return avgCPU, nil
+}
+
+func (m *ResourceMonitor) getMemoryUsage() (float64, error) {
+	const cacheDuration = 5 * time.Second
+
+	// 检查缓存
+	if value, ok := m.memCache.get(); ok && !m.memCache.isExpired(cacheDuration) {
+		return value, nil
+	}
+
+	memInfo, err := mem.VirtualMemory()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get memory info: %v", err)
+	}
+
+	// 验证数据有效性
+	if memInfo.Total == 0 {
+		return 0, fmt.Errorf("invalid total memory")
+	}
+
+	memUsage := memInfo.UsedPercent / 100.0
+
+	// 缓存结果
+	m.memCache.set(memUsage)
+
+	return memUsage, nil
+}
+
+func (m *ResourceMonitor) getDiskUsage() (float64, error) {
+	const cacheDuration = 30 * time.Second // 磁盘使用率变化较慢，缓存时间更长
+
+	// 检查缓存
+	if value, ok := m.diskCache.get(); ok && !m.diskCache.isExpired(cacheDuration) {
+		return value, nil
+	}
+
+	partitions, err := disk.Partitions(false)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get disk partitions: %v", err)
+	}
+
+	if len(partitions) == 0 {
+		return 0, fmt.Errorf("no disk partitions found")
+	}
+
+	// 尝试多个挂载点，找到可用的
+	var diskUsage float64
+	var success bool
+	for _, part := range partitions {
+		if part.Mountpoint == "" {
+			continue
+		}
+
+		usage, err := disk.Usage(part.Mountpoint)
+		if err != nil {
+			log.Printf("Warning: failed to get disk usage for %s: %v", part.Mountpoint, err)
+			continue
+		}
+
+		if usage.Total > 0 {
+			diskUsage = usage.UsedPercent / 100.0
+			success = true
+			break
+		}
+	}
+
+	if !success {
+		return 0, fmt.Errorf("failed to get disk usage from any partition")
+	}
+
+	// 缓存结果
+	m.diskCache.set(diskUsage)
+
+	return diskUsage, nil
+}
+
+func (m *ResourceMonitor) getNetworkStats() (int64, int64, error) {
+	const cacheDuration = 5 * time.Second
+
+	// 检查缓存
+	// 注意：网络流量是累积值，不能直接缓存，需要计算差值
+	counters, err := net.IOCounters(false)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to get network counters: %v", err)
+	}
+
+	if len(counters) == 0 {
+		return 0, 0, fmt.Errorf("no network counters found")
+	}
+
+	// 返回当前值（流量计算需要在更高层处理）
+	return int64(counters[0].BytesSent), int64(counters[0].BytesRecv), nil
+}
+
 // checkAlerts 检查告警
 func (m *ResourceMonitor) checkAlerts(metrics *ResourceMetrics) {
+	// 定义告警阈值
+	const (
+		cpuCriticalThreshold = 0.90 // 90%
+		cpuWarningThreshold  = 0.80 // 80%
+
+		memCriticalThreshold = 0.90 // 90%
+		memWarningThreshold  = 0.75 // 75%
+
+		diskCriticalThreshold = 0.95 // 95%
+		diskWarningThreshold  = 0.85 // 85%
+
+		connCriticalThreshold = 90000 // 系统限制的90%
+		connWarningThreshold  = 70000 // 系统限制的70%
+	)
+
 	// 检查CPU使用率
-	if metrics.CPUUsage > 0.9 {
+	if metrics.CPUUsage > cpuCriticalThreshold {
 		m.triggerAlert(&Alert{
 			AlertType: AlertTypeCPULow,
 			Severity:  AlertSeverityCritical,
-			Message:   fmt.Sprintf("CPU usage too high: %.2f%%", metrics.CPUUsage*100),
+			Message:   fmt.Sprintf("CPU usage critical: %.2f%% (threshold: %.0f%%)", metrics.CPUUsage*100, cpuCriticalThreshold*100),
+			Timestamp: time.Now(),
+		})
+	} else if metrics.CPUUsage > cpuWarningThreshold {
+		m.triggerAlert(&Alert{
+			AlertType: AlertTypeCPULow,
+			Severity:  AlertSeverityWarning,
+			Message:   fmt.Sprintf("CPU usage high: %.2f%% (threshold: %.0f%%)", metrics.CPUUsage*100, cpuWarningThreshold*100),
 			Timestamp: time.Now(),
 		})
 	}
 
 	// 检查内存使用率
-	if metrics.MemoryUsage > 0.9 {
+	if metrics.MemoryUsage > memCriticalThreshold {
 		m.triggerAlert(&Alert{
 			AlertType: AlertTypeMemoryHigh,
 			Severity:  AlertSeverityCritical,
-			Message:   fmt.Sprintf("Memory usage too high: %.2f%%", metrics.MemoryUsage*100),
+			Message:   fmt.Sprintf("Memory usage critical: %.2f%% (threshold: %.0f%%)", metrics.MemoryUsage*100, memCriticalThreshold*100),
+			Timestamp: time.Now(),
+		})
+	} else if metrics.MemoryUsage > memWarningThreshold {
+		m.triggerAlert(&Alert{
+			AlertType: AlertTypeMemoryHigh,
+			Severity:  AlertSeverityWarning,
+			Message:   fmt.Sprintf("Memory usage high: %.2f%% (threshold: %.0f%%)", metrics.MemoryUsage*100, memWarningThreshold*100),
+			Timestamp: time.Now(),
+		})
+	}
+
+	// 检查磁盘使用率
+	if metrics.DiskUsage > diskCriticalThreshold {
+		m.triggerAlert(&Alert{
+			AlertType: AlertTypeStorageExceeded,
+			Severity:  AlertSeverityCritical,
+			Message:   fmt.Sprintf("Disk usage critical: %.2f%% (threshold: %.0f%%)", metrics.DiskUsage*100, diskCriticalThreshold*100),
+			Timestamp: time.Now(),
+		})
+	} else if metrics.DiskUsage > diskWarningThreshold {
+		m.triggerAlert(&Alert{
+			AlertType: AlertTypeStorageExceeded,
+			Severity:  AlertSeverityWarning,
+			Message:   fmt.Sprintf("Disk usage high: %.2f%% (threshold: %.0f%%)", metrics.DiskUsage*100, diskWarningThreshold*100),
 			Timestamp: time.Now(),
 		})
 	}
 
 	// 检查连接数
-	if metrics.ConnectionCount > 80000 { // 系统限制的80%
+	if metrics.ConnectionCount > connCriticalThreshold {
+		m.triggerAlert(&Alert{
+			AlertType: AlertTypeConnectionLimit,
+			Severity:  AlertSeverityCritical,
+			Message:   fmt.Sprintf("Connection count critical: %d (threshold: %d)", metrics.ConnectionCount, connCriticalThreshold),
+			Timestamp: time.Now(),
+		})
+	} else if metrics.ConnectionCount > connWarningThreshold {
 		m.triggerAlert(&Alert{
 			AlertType: AlertTypeConnectionLimit,
 			Severity:  AlertSeverityWarning,
-			Message:   fmt.Sprintf("Connection count high: %d", metrics.ConnectionCount),
+			Message:   fmt.Sprintf("Connection count high: %d (threshold: %d)", metrics.ConnectionCount, connWarningThreshold),
+			Timestamp: time.Now(),
+		})
+	}
+
+	// 检查请求速率（如果有）
+	if metrics.RequestRate > 10000 {
+		m.triggerAlert(&Alert{
+			AlertType: AlertTypeRequestRateHigh,
+			Severity:  AlertSeverityWarning,
+			Message:   fmt.Sprintf("Request rate high: %.2f qps", metrics.RequestRate),
 			Timestamp: time.Now(),
 		})
 	}

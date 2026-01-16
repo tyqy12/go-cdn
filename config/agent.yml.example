@@ -1,0 +1,144 @@
+# GoCDN Agent配置文件示例
+
+# 节点配置
+node:
+  id: ""  # 留空自动生成
+  name: ""  # 留空自动生成
+  type: edge  # edge, core
+  region: hk
+  ip: ""  # 自动检测
+  version: 2.0.0
+  token: ""  # Master分配的token
+
+# Master配置
+master:
+  addr: localhost:50051
+  tls_enabled: false
+  tls_cert_file: ""
+  tls_key_file: ""
+  tls_ca_file: ""
+  insecure: false  # 开发环境可设为true
+  timeout: 30s
+
+# CDN配置
+cdn:
+  # 服务配置
+  server:
+    http_addr: :8080
+    https_addr: :8443
+    mode: release  # debug, release
+    tls_cert_file: ""
+    tls_key_file: ""
+    tls_domain: ""
+    tls_auto_gen: true  # 自动生成自签名证书
+
+  # 上游配置
+  upstreams:
+    - name: origin-1
+      addr: 127.0.0.1
+      port: 3000
+      weight: 1
+      enabled: true
+      path_prefix: ""
+
+    # - name: origin-2
+    #   addr: 127.0.0.1
+    #   port: 3001
+    #   weight: 1
+    #   enabled: true
+
+  # 负载均衡配置
+  load_balance:
+    strategy: round_robin  # round_robin, least_conn, ip_hash, weighted, random
+    sticky: false
+    sticky_mode: cookie
+    sticky_cookie: GOCDN_STICKY
+    sticky_timeout: 1800
+
+  # 健康检查配置
+  health_check:
+    enabled: true
+    interval: 10  # 秒
+    timeout: 5  # 秒
+    unhealthy_threshold: 3
+    healthy_threshold: 2
+    check_path: /health
+    check_method: GET
+    expected_codes: [200]
+
+  # 故障转移配置
+  failover:
+    enabled: true
+    strategy: primary  # primary, active_active, active_standby, weighted
+    max_retries: 3
+    switch_timeout: 30  # 秒
+    auto_fallback: true
+    stable_window: 300  # 秒
+
+  # 安全防护配置
+  security:
+    # 连接保护
+    global_max_connections: 100000
+    global_max_conn_rate: 10000  # 每秒
+    per_client_max_connections: 100
+    per_client_max_rate: 100
+
+    # 慢连接防护
+    slow_connection_threshold: 5  # 秒
+    slow_read_threshold: 10  # 秒
+    slow_write_threshold: 10  # 秒
+
+    # 请求限制
+    max_header_size: 8192  # 字节
+    max_headers_count: 100
+    max_request_body_size: 10485760  # 10MB
+
+    # 速率限制规则
+    rate_limits:
+      - name: global-limit
+        path_pattern: ".*"
+        threshold: 1000  # 每秒请求数
+        window: 1  # 秒
+        action: limit  # limit, block
+
+    # IP黑白名单
+    ip_whitelist: []
+    ip_blacklist: []
+
+    # CC防护
+    cc_protection:
+      enabled: false
+      threshold: 100  # QPS
+      burst: 10
+      action: limit  # limit, challenge, block
+      challenge_type: js  # js, captcha
+
+  # 路由配置
+  routes:
+    - name: default-route
+      pattern: "/*"
+      match_type: prefix
+      target_pool: default
+      action: allow
+      priority: 100
+      enabled: true
+
+    # 示例：阻止特定路径
+    # - name: block-admin
+    #   pattern: "/admin/*"
+    #   match_type: prefix
+    #   target_pool: ""
+    #   action: block
+    #   priority: 200
+    #   enabled: true
+
+  # 监控配置
+  monitoring:
+    enabled: true
+    prometheus_addr: 0.0.0.0:9090
+    prometheus_path: /metrics
+    metrics_interval: 15  # 秒
+
+# GOST配置（可选，用于隧道模式）
+gost_config_path: /etc/ai-cdn/gost.yml
+services: []

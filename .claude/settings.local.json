@@ -9,7 +9,16 @@
       "Bash(npm run build)",
       "Bash(git remote get-url:*)",
       "Bash(where:*)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\nInitial commit: gocdn project structure\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nInitial commit: gocdn project structure\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh api:*)",
+      "Bash(ls:*)",
+      "Bash(dir:*)",
+      "Bash(go list:*)",
+      "Bash(go mod:*)",
+      "Bash(powershell:*)"
     ]
   }
 }
